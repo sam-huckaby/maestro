@@ -1,0 +1,59 @@
+{
+  "name": "maestro",
+  "version": "1.0.0",
+  "description": "Multi-Agent Orchestration CLI - Coordinate AI agents using confidence-based routing",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "maestro": "./dist/bin/maestro.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "bun --watch src/index.ts",
+    "start": "bun dist/bin/maestro.js",
+    "lint": "bun eslint src --ext .ts",
+    "lint:fix": "bun eslint src --ext .ts --fix",
+    "format": "bun prettier --write \"src/**/*.ts\"",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "orchestration",
+    "cli",
+    "multi-agent",
+    "anthropic",
+    "llm"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "better-sqlite3": "^11.6.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "cosmiconfig": "^9.0.0",
+    "eventemitter3": "^5.0.1",
+    "lru-cache": "^11.0.2",
+    "nanoid": "^5.0.9",
+    "ora": "^8.1.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.5",
+    "eslint": "^9.17.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.4.2",
+    "ts-jest": "^29.2.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.0"
+  }
+}
