@@ -48,20 +48,24 @@ export class AgentError extends MaestroError {
 export class NoConfidentAgentError extends MaestroError {
   public readonly taskId: string;
   public readonly assessments: Array<{ agentId: string; confidence: number }>;
+  public readonly recoveryAttempted: boolean;
 
   constructor(
     taskId: string,
     assessments: Array<{ agentId: string; confidence: number }>,
-    threshold: number
+    threshold: number,
+    recoveryAttempted?: boolean
   ) {
+    const recoveryNote = recoveryAttempted ? ' (recovery attempted)' : '';
     super(
-      `No agent met confidence threshold ${threshold} for task ${taskId}`,
+      `No agent met confidence threshold ${threshold} for task ${taskId}${recoveryNote}`,
       'NO_CONFIDENT_AGENT',
-      { taskId, assessments, threshold }
+      { taskId, assessments, threshold, recoveryAttempted }
     );
     this.name = 'NoConfidentAgentError';
     this.taskId = taskId;
     this.assessments = assessments;
+    this.recoveryAttempted = recoveryAttempted ?? false;
   }
 }
 
@@ -79,6 +83,46 @@ export class TaskTimeoutError extends TaskError {
   constructor(taskId: string, timeoutMs: number) {
     super(`Task ${taskId} timed out after ${timeoutMs}ms`, taskId, { timeoutMs });
     this.name = 'TaskTimeoutError';
+  }
+}
+
+export class AgentStuckError extends AgentError {
+  constructor(
+    agentId: string,
+    agentRole: string,
+    lastActivityMs: number,
+    activityTimeoutMs: number
+  ) {
+    super(
+      `Agent ${agentId} (${agentRole}) stuck - no activity for ${lastActivityMs}ms`,
+      agentId,
+      agentRole,
+      { lastActivityMs, activityTimeoutMs }
+    );
+    this.name = 'AgentStuckError';
+  }
+}
+
+export class HandoffCycleLimitError extends TaskError {
+  public readonly handoffCount: number;
+  public readonly maxHandoffs: number;
+  public readonly history: Array<{ from: string; to: string }>;
+
+  constructor(
+    taskId: string,
+    handoffCount: number,
+    maxHandoffs: number,
+    history: Array<{ from: string; to: string }>
+  ) {
+    super(
+      `Task ${taskId} exceeded max handoff cycles (${handoffCount}/${maxHandoffs})`,
+      taskId,
+      { handoffCount, maxHandoffs, history }
+    );
+    this.name = 'HandoffCycleLimitError';
+    this.handoffCount = handoffCount;
+    this.maxHandoffs = maxHandoffs;
+    this.history = history;
   }
 }
 
@@ -151,6 +195,7 @@ export class ValidationError extends MaestroError {
 export function isRetryableError(error: unknown): boolean {
   if (error instanceof LLMRateLimitError) return true;
   if (error instanceof TaskTimeoutError) return true;
+  if (error instanceof AgentStuckError) return true;
   if (error instanceof MaestroError) {
     return ['LLM_ERROR', 'TASK_ERROR'].includes(error.code);
   }

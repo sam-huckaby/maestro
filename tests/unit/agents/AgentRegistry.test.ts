@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { AgentRegistry } from '../../../src/agents/base/AgentRegistry.js';
 import { Agent } from '../../../src/agents/base/Agent.js';
 import type { AgentConfig } from '../../../src/agents/base/types.js';
@@ -8,13 +8,15 @@ import type { LLMProvider, LLMResponse } from '../../../src/llm/types.js';
 const mockLLMProvider: LLMProvider = {
   type: 'anthropic',
   model: 'test-model',
-  complete: jest.fn().mockResolvedValue({
-    content: '{"confidence": 0.8, "reason": "Test reason"}',
-    model: 'test',
-    usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
-    stopReason: 'end_turn',
-  } as LLMResponse),
-  isAvailable: jest.fn().mockResolvedValue(true),
+  complete: mock(() =>
+    Promise.resolve({
+      content: '{"confidence": 0.8, "reason": "Test reason"}',
+      model: 'test',
+      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      stopReason: 'end_turn',
+    } as LLMResponse)
+  ),
+  isAvailable: mock(() => Promise.resolve(true)),
 };
 
 // Test agent implementation

@@ -1,6 +1,30 @@
-import type { LLMProvider } from '../../llm/types.js';
+import type { LLMProvider, ContentBlock } from '../../llm/types.js';
 import type { Task, TaskDecomposition, ProjectContext } from '../../tasks/types.js';
 import { createTask } from '../../tasks/Task.js';
+
+/**
+ * Extract text content from LLM response
+ */
+function extractTextContent(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  return content
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n');
+}
+
+const REPLAN_PROMPT = `You are replanning a failed task. The previous approach did not work.
+
+Guidelines for replanning:
+- Break the task into SMALLER, more focused subtasks
+- Each subtask should be completable by a SINGLE agent
+- Avoid tasks that require back-and-forth between agents
+- Focus on concrete, actionable steps
+- If the original task was too ambitious, simplify the goal
+
+Output format: Same JSON structure as regular task planning.`;
 
 const TASK_PLANNER_PROMPT = `You are a task planning agent. Your job is to break down a high-level goal into actionable tasks.
 
@@ -53,7 +77,8 @@ export class TaskPlanner {
       temperature: 0.5,
     });
 
-    const parsed = this.parsePlanResponse(response.content, goal);
+    const textContent = extractTextContent(response.content);
+    const parsed = this.parsePlanResponse(textContent, goal);
     return this.buildDecomposition(goal, parsed);
   }
 
@@ -158,35 +183,37 @@ Create a logical task breakdown with clear dependencies.
     projectContext: ProjectContext
   ): Promise<Task[]> {
     const prompt = `
-The following task needs refinement based on feedback:
-
-TASK: ${task.goal}
+FAILED TASK: ${task.goal}
 DESCRIPTION: ${task.description}
 
-FEEDBACK: ${feedback}
+FAILURE FEEDBACK:
+${feedback}
+
+PREVIOUS ATTEMPTS: ${task.attempts.length}
 
 PROJECT CONTEXT:
 - Name: ${projectContext.name}
 - Constraints: ${projectContext.constraints.join(', ') || 'None'}
 
-Break this task into smaller, more specific subtasks if needed.
-Or provide a single refined task if the feedback can be addressed directly.
+Please create a new plan that avoids the issues that caused the failure.
+Focus on simpler, more achievable tasks.
 `.trim();
 
     const response = await this.llm.complete({
-      system: TASK_PLANNER_PROMPT,
+      system: REPLAN_PROMPT,
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 1500,
       temperature: 0.5,
     });
 
-    const parsed = this.parsePlanResponse(response.content, task.goal);
+    const textContent = extractTextContent(response.content);
+    const parsed = this.parsePlanResponse(textContent, task.goal);
 
     return parsed.map((item) =>
       createTask({
         goal: item.goal,
         description: item.description,
-        metadata: { parentTaskId: task.id, taskType: item.type },
+        metadata: { parentTaskId: task.id, taskType: item.type, replannedFrom: task.id },
       })
     );
   }

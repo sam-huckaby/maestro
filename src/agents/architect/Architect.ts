@@ -22,7 +22,7 @@ export class Architect extends Agent {
     return ARCHITECT_SYSTEM_PROMPT;
   }
 
-  protected buildExecutionPrompt(task: Task, context: TaskContext): string {
+  protected async buildExecutionPrompt(task: Task, context: TaskContext): Promise<string> {
     const constraints = context.projectContext.constraints.length > 0
       ? context.projectContext.constraints.join('\n- ')
       : 'None specified';
@@ -40,6 +40,18 @@ export class Architect extends Agent {
       .replace('{{constraints}}', constraints)
       .replace('{{handoffContext}}', handoffContext);
 
+    // Include file tree if available
+    if (context.fileContext) {
+      try {
+        const fileTree = context.fileContext.formatTreeForPrompt(80);
+        if (fileTree) {
+          prompt += `\n\nPROJECT FILE STRUCTURE:\n${fileTree}`;
+        }
+      } catch {
+        // Ignore file tree errors
+      }
+    }
+
     if (handoffConstraints) {
       prompt += `\n\nADDITIONAL CONSTRAINTS:\n- ${handoffConstraints}`;
     }
@@ -48,6 +60,14 @@ export class Architect extends Agent {
     if (task.handoff.artifacts.length > 0) {
       prompt += `\n\nRELATED ARTIFACTS:\n${task.handoff.artifacts.join('\n')}`;
     }
+
+    // Add tool usage instructions
+    prompt += `\n\nTOOL USAGE:
+You have access to the following tools to understand the existing codebase:
+- read_file(path): Read the contents of a file to understand existing patterns
+- find_files(pattern): Find files matching a glob pattern (e.g., "**/*.ts")
+
+Use these tools to understand existing architecture before proposing designs.`;
 
     return prompt;
   }

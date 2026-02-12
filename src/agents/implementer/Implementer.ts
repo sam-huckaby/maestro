@@ -22,7 +22,14 @@ export class Implementer extends Agent {
     return IMPLEMENTER_SYSTEM_PROMPT;
   }
 
-  protected buildExecutionPrompt(task: Task, context: TaskContext): string {
+  /**
+   * Implementer has write permissions to create and modify files
+   */
+  protected get canWriteFiles(): boolean {
+    return true;
+  }
+
+  protected async buildExecutionPrompt(task: Task, context: TaskContext): Promise<string> {
     const constraints = context.projectContext.constraints.length > 0
       ? context.projectContext.constraints.join('\n- ')
       : 'None specified';
@@ -37,6 +44,18 @@ export class Implementer extends Agent {
       .replace('{{constraints}}', constraints)
       .replace('{{handoffContext}}', handoffContext);
 
+    // Include file tree if available
+    if (context.fileContext) {
+      try {
+        const fileTree = context.fileContext.formatTreeForPrompt(80);
+        if (fileTree) {
+          prompt += `\n\nPROJECT FILE STRUCTURE:\n${fileTree}`;
+        }
+      } catch {
+        // Ignore file tree errors
+      }
+    }
+
     // Include design artifacts
     if (task.handoff.artifacts.length > 0) {
       prompt += '\n\nDESIGN ARTIFACTS:\n';
@@ -50,6 +69,29 @@ export class Implementer extends Agent {
       prompt += '\n\nIMPLEMENTATION CONSTRAINTS:\n- ';
       prompt += task.handoff.constraints.join('\n- ');
     }
+
+    // Add tool usage instructions
+    prompt += `\n\nTOOL USAGE:
+You have access to the following tools:
+
+READ TOOLS:
+- read_file(path): Read the contents of a file to understand existing code
+- find_files(pattern): Find files matching a glob pattern (e.g., "**/*.ts")
+
+WRITE TOOLS:
+- write_file(path, content, overwrite?): Create or overwrite a file. IMPORTANT: You MUST read the file first before overwriting unless overwrite=true.
+- edit_file(path, old_content, new_content): Make targeted edits using search/replace. MUST read file first. old_content must exactly match.
+- restore_file(path): Restore a file from backup if a write went wrong.
+
+WORKFLOW:
+1. Use find_files to discover relevant files
+2. Use read_file to understand existing code patterns
+3. Use write_file to create new files or edit_file to modify existing ones
+4. If you make a mistake, use restore_file to undo
+
+RESTRICTIONS:
+- Cannot write to .env, credentials, or other sensitive files
+- Cannot write to node_modules/, .git/, or lock files`;
 
     return prompt;
   }

@@ -94,3 +94,17 @@ export interface SharedView {
   set(namespace: string, key: string, value: unknown): Promise<void>;
   getNamespace(namespace: string): Promise<Record<string, unknown>>;
 }
+
+export type ActivityType =
+  | 'llm_request_start'
+  | 'llm_response_received'
+  | 'tool_execution_start'
+  | 'tool_execution_complete';
+
+export interface ActivityEvent {
+  type: ActivityType;
+  agentId: string;
+  taskId: string;
+  timestamp: Date;
+  metadata?: Record<string, unknown>;
+}

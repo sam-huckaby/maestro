@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { nanoid } from 'nanoid';
 import type { LongTermMemoryConfig, MemoryEntry, MemoryEntryType } from '../types.js';
 import { longTermMigrations, runMigrations } from '../schemas/migrations.js';
@@ -6,7 +6,7 @@ import { ensureDirectory } from '../../utils/fs.js';
 import path from 'node:path';
 
 export class LongTermMemory {
-  private db: Database.Database;
+  private db: Database;
 
   constructor(config: LongTermMemoryConfig) {
     // Ensure directory exists
@@ -17,10 +17,10 @@ export class LongTermMemory {
     this.db = new Database(config.databasePath);
 
     if (config.walMode) {
-      this.db.pragma('journal_mode = WAL');
+      this.db.run('PRAGMA journal_mode = WAL');
     }
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('foreign_keys = ON');
+    this.db.run('PRAGMA synchronous = NORMAL');
+    this.db.run('PRAGMA foreign_keys = ON');
 
     runMigrations(this.db, longTermMigrations);
   }

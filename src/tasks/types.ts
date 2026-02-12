@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AgentRole, Artifact } from '../agents/base/types.js';
+import type { FileContext } from '../context/FileContext.js';
 
 export const TaskStatusSchema = z.enum([
   'pending',
@@ -34,6 +35,23 @@ export interface TaskAttempt {
   artifacts: Artifact[];
 }
 
+export type FailureReason =
+  | 'execution_error'
+  | 'dependency_failed'
+  | 'timeout'
+  | 'agent_stuck'
+  | 'no_confident_agent'
+  | 'handoff_limit'
+  | 'replan_failed';
+
+export interface FailureInfo {
+  reason: FailureReason;
+  message: string;
+  failedDependency?: string;
+  timestamp: Date;
+  replanAttempted?: boolean;
+}
+
 export interface Task {
   id: string;
   goal: string;
@@ -48,6 +66,7 @@ export interface Task {
   updatedAt: Date;
   completedAt?: Date;
   metadata: Record<string, unknown>;
+  failureInfo?: FailureInfo;
 }
 
 export interface TaskResult {
@@ -63,6 +82,7 @@ export interface TaskContext {
   parentTask?: Task;
   relatedTasks: Task[];
   projectContext: ProjectContext;
+  fileContext?: FileContext;
   executionHistory: TaskAttempt[];
 }
 

@@ -1,9 +1,9 @@
-import type Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 
 export interface Migration {
   version: number;
   name: string;
-  up: (db: Database.Database) => void;
+  up: (db: Database) => void;
 }
 
 export const longTermMigrations: Migration[] = [
@@ -84,15 +84,18 @@ export const sharedMigrations: Migration[] = [
   },
 ];
 
-export function runMigrations(db: Database.Database, migrations: Migration[]): void {
+export function runMigrations(db: Database, migrations: Migration[]): void {
+  // Ensure schema_version table exists first
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    )
+  `);
+
   // Get current version
-  let currentVersion = 0;
-  try {
-    const row = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number } | undefined;
-    currentVersion = row?.version ?? 0;
-  } catch {
-    // Table doesn't exist yet, that's fine
-  }
+  const row = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number } | undefined;
+  const currentVersion = row?.version ?? 0;
 
   // Run pending migrations
   for (const migration of migrations) {

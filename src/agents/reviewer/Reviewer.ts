@@ -37,7 +37,7 @@ export class Reviewer extends Agent {
     return REVIEWER_SYSTEM_PROMPT;
   }
 
-  protected buildExecutionPrompt(task: Task, context: TaskContext): string {
+  protected async buildExecutionPrompt(task: Task, context: TaskContext): Promise<string> {
     const constraints = context.projectContext.constraints.length > 0
       ? context.projectContext.constraints.join('\n- ')
       : 'Standard best practices';
@@ -52,6 +52,18 @@ export class Reviewer extends Agent {
       .replace('{{constraints}}', constraints)
       .replace('{{handoffContext}}', handoffContext);
 
+    // Include file tree if available
+    if (context.fileContext) {
+      try {
+        const fileTree = context.fileContext.formatTreeForPrompt(60);
+        if (fileTree) {
+          prompt += `\n\nPROJECT FILE STRUCTURE:\n${fileTree}`;
+        }
+      } catch {
+        // Ignore file tree errors
+      }
+    }
+
     // Include code artifacts to review
     if (task.handoff.artifacts.length > 0) {
       prompt += '\n\nCODE ARTIFACTS:\n';
@@ -59,6 +71,14 @@ export class Reviewer extends Agent {
         prompt += `\n${artifact}\n`;
       }
     }
+
+    // Add tool usage instructions
+    prompt += `\n\nTOOL USAGE:
+You have access to the following tools to help review the implementation:
+- read_file(path): Read the contents of a file to examine the actual code
+- find_files(pattern): Find files matching a glob pattern (e.g., "**/*.test.ts")
+
+Use these tools to examine the implementation in context, check for consistency with existing code, and verify test coverage.`;
 
     return prompt;
   }

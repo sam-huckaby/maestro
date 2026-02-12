@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { TaskQueue } from '../../../src/tasks/TaskQueue.js';
 import { createTask, updateTaskStatus } from '../../../src/tasks/Task.js';
 
@@ -20,7 +20,7 @@ describe('TaskQueue', () => {
 
     it('should emit taskAdded event', () => {
       const task = createTask({ goal: 'Test' });
-      const handler = jest.fn();
+      const handler = mock(() => {});
       queue.on('taskAdded', handler);
 
       queue.add(task);
@@ -49,7 +49,7 @@ describe('TaskQueue', () => {
       const task = createTask({ goal: 'Test' });
       queue.add(task);
 
-      const handler = jest.fn();
+      const handler = mock(() => {});
       queue.on('taskCompleted', handler);
 
       const updated = updateTaskStatus(task, 'completed');

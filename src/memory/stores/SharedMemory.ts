@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { nanoid } from 'nanoid';
 import type { SharedMemoryConfig } from '../types.js';
 import { sharedMigrations, runMigrations } from '../schemas/migrations.js';
@@ -7,7 +7,7 @@ import { MemoryAccessError } from '../../utils/errors.js';
 import path from 'node:path';
 
 export class SharedMemory {
-  private db: Database.Database;
+  private db: Database;
   private allowedNamespaces: Set<string>;
 
   constructor(config: SharedMemoryConfig) {
@@ -15,9 +15,9 @@ export class SharedMemory {
     ensureDirectory(dir);
 
     this.db = new Database(config.databasePath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('foreign_keys = ON');
+    this.db.run('PRAGMA journal_mode = WAL');
+    this.db.run('PRAGMA synchronous = NORMAL');
+    this.db.run('PRAGMA foreign_keys = ON');
 
     this.allowedNamespaces = new Set(config.namespaces);
 

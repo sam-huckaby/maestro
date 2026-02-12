@@ -1,7 +1,8 @@
 import { EventEmitter } from 'eventemitter3';
 import type { Agent } from '../base/Agent.js';
-import type { AgentResponse, AgentRole } from '../base/types.js';
-import type { Task, TaskContext, TaskResult, ProjectContext } from '../../tasks/types.js';
+import type { AgentResponse, AgentRole, ActivityEvent } from '../base/types.js';
+import type { Task, TaskContext, TaskResult, ProjectContext, FailureReason } from '../../tasks/types.js';
+import type { TaskPlanner } from './TaskPlanner.js';
 import { TaskQueue } from '../../tasks/TaskQueue.js';
 import {
   updateTaskStatus,
@@ -11,7 +12,23 @@ import {
 } from '../../tasks/Task.js';
 import { updateHandoffWithResponse } from '../../tasks/HandoffPayload.js';
 import { ConfidenceRouter, type RoutingDecision } from './ConfidenceRouter.js';
-import { TaskTimeoutError, NoConfidentAgentError } from '../../utils/errors.js';
+import {
+  TaskTimeoutError,
+  NoConfidentAgentError,
+  AgentStuckError,
+  HandoffCycleLimitError,
+} from '../../utils/errors.js';
+import { FileContext } from '../../context/FileContext.js';
+import {
+  ActivityWatchdog,
+  type WatchdogConfig,
+  getDefaultWatchdogConfig,
+} from './ActivityWatchdog.js';
+import {
+  DEFAULT_RECOVERY_ENABLED,
+  DEFAULT_MAX_REPLAN_ATTEMPTS,
+  DEFAULT_CASCADE_ON_REPLAN_FAILURE,
+} from '../../config/defaults.js';
 
 export interface ExecutionLoopEvents {
   taskStarted: (task: Task, agent: Agent) => void;
@@ -22,12 +39,26 @@ export interface ExecutionLoopEvents {
   loopStarted: () => void;
   loopCompleted: (results: TaskResult[]) => void;
   loopError: (error: Error) => void;
+  agentStuck: (task: Task, agent: Agent, lastActivityMs: number) => void;
+  handoffCycleWarning: (task: Task, cycleCount: number, maxCycles: number) => void;
+  taskReplanStarted: (task: Task) => void;
+  taskReplanned: (oldTask: Task, newTasks: Task[]) => void;
+  taskReplanFailed: (task: Task, error: Error) => void;
+  taskCascadeFailed: (task: Task, failedDep: Task) => void;
+}
+
+export interface RecoveryConfig {
+  enabled: boolean;
+  maxReplanAttempts: number;
+  cascadeOnReplanFailure: boolean;
 }
 
 export interface ExecutionLoopConfig {
   maxRetries: number;
   taskTimeoutMs: number;
   reviewRequired: boolean;
+  stuckDetection: WatchdogConfig;
+  recovery: RecoveryConfig;
 }
 
 export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
@@ -37,22 +68,56 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
   private projectContext: ProjectContext;
   private results: TaskResult[] = [];
   private running = false;
+  private watchdog: ActivityWatchdog;
+  private stuckAgentAbortControllers: Map<string, AbortController> = new Map();
+  private currentAgentByTask: Map<string, Agent> = new Map();
+  private taskPlanner?: TaskPlanner;
+  private replanAttempts: Map<string, number> = new Map();
 
   constructor(
     queue: TaskQueue,
     router: ConfidenceRouter,
     projectContext: ProjectContext,
-    config: Partial<ExecutionLoopConfig> = {}
+    config: Partial<ExecutionLoopConfig> = {},
+    taskPlanner?: TaskPlanner
   ) {
     super();
     this.queue = queue;
     this.router = router;
     this.projectContext = projectContext;
+    this.taskPlanner = taskPlanner;
     this.config = {
       maxRetries: config.maxRetries ?? 3,
       taskTimeoutMs: config.taskTimeoutMs ?? 300000,
       reviewRequired: config.reviewRequired ?? true,
+      stuckDetection: config.stuckDetection ?? getDefaultWatchdogConfig(),
+      recovery: config.recovery ?? {
+        enabled: DEFAULT_RECOVERY_ENABLED,
+        maxReplanAttempts: DEFAULT_MAX_REPLAN_ATTEMPTS,
+        cascadeOnReplanFailure: DEFAULT_CASCADE_ON_REPLAN_FAILURE,
+      },
     };
+
+    // Initialize watchdog
+    this.watchdog = new ActivityWatchdog(this.config.stuckDetection);
+    this.setupWatchdogEvents();
+  }
+
+  private setupWatchdogEvents(): void {
+    this.watchdog.on('agentStuck', (_agentId, taskId, lastActivityMs) => {
+      const task = this.queue.get(taskId);
+      const agent = this.currentAgentByTask.get(taskId);
+      if (task && agent) {
+        this.emit('agentStuck', task, agent, lastActivityMs);
+      }
+    });
+
+    this.watchdog.on('handoffCycleWarning', (taskId, cycleCount, maxCycles) => {
+      const task = this.queue.get(taskId);
+      if (task) {
+        this.emit('handoffCycleWarning', task, cycleCount, maxCycles);
+      }
+    });
   }
 
   async run(): Promise<TaskResult[]> {
@@ -63,6 +128,9 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     this.running = true;
     this.results = [];
     this.emit('loopStarted');
+
+    // Start the watchdog
+    this.watchdog.start();
 
     try {
       while (!this.queue.isComplete() && this.running) {
@@ -90,6 +158,9 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
       throw err;
     } finally {
       this.running = false;
+      this.watchdog.stop();
+      this.stuckAgentAbortControllers.clear();
+      this.currentAgentByTask.clear();
     }
   }
 
@@ -152,13 +223,17 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
         }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
+        const reason = this.determineFailureReason(err);
 
-        if (error instanceof NoConfidentAgentError) {
-          // No agent can handle this task
+        // Clear watchdog state for handoff limit errors
+        if (error instanceof HandoffCycleLimitError) {
+          this.watchdog.clearTask(currentTask.id);
+        }
+
+        // Non-retriable errors: fail immediately and attempt recovery
+        if (error instanceof NoConfidentAgentError || error instanceof HandoffCycleLimitError) {
           currentTask = completeTaskAttempt(currentTask, false, undefined, err.message);
-          currentTask = updateTaskStatus(currentTask, 'failed');
-          this.queue.update(currentTask);
-          this.emit('taskFailed', currentTask, err);
+          await this.handleTaskFailure(currentTask, err, reason);
           return;
         }
 
@@ -170,9 +245,8 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
           this.emit('taskRetrying', currentTask, attempt, this.config.maxRetries);
           await this.delay(1000 * attempt); // Exponential backoff
         } else {
-          currentTask = updateTaskStatus(currentTask, 'failed');
-          this.queue.update(currentTask);
-          this.emit('taskFailed', currentTask, err);
+          // Max retries exceeded - fail and attempt recovery
+          await this.handleTaskFailure(currentTask, err, reason);
           return;
         }
       }
@@ -184,10 +258,48 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     task: Task,
     context: TaskContext
   ): Promise<AgentResponse> {
-    return Promise.race([
-      agent.execute(task, context),
-      this.timeout(task.id, this.config.taskTimeoutMs),
-    ]);
+    // Track which agent is working on this task
+    this.currentAgentByTask.set(task.id, agent);
+
+    // Wire agent's activity callback to watchdog
+    agent.setActivityCallback((event: ActivityEvent) => {
+      this.watchdog.recordActivity(event);
+    });
+
+    // Create AbortController for stuck detection
+    const abortController = this.watchdog.createAbortController(agent.id, task.id);
+    this.stuckAgentAbortControllers.set(`${agent.id}:${task.id}`, abortController);
+
+    try {
+      return await Promise.race([
+        agent.execute(task, context),
+        this.timeout(task.id, this.config.taskTimeoutMs),
+        this.abortPromise(agent.id, agent.role, task.id, abortController),
+      ]);
+    } finally {
+      // Clean up
+      agent.clearActivityCallback();
+      this.watchdog.clearAgent(agent.id, task.id);
+      this.stuckAgentAbortControllers.delete(`${agent.id}:${task.id}`);
+      this.currentAgentByTask.delete(task.id);
+    }
+  }
+
+  private abortPromise(
+    agentId: string,
+    agentRole: string,
+    _taskId: string,
+    controller: AbortController
+  ): Promise<never> {
+    return new Promise((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(new AgentStuckError(agentId, agentRole, 0, this.config.stuckDetection.activityTimeoutMs));
+        return;
+      }
+      controller.signal.addEventListener('abort', () => {
+        reject(new AgentStuckError(agentId, agentRole, 0, this.config.stuckDetection.activityTimeoutMs));
+      });
+    });
   }
 
   private timeout(taskId: string, ms: number): Promise<never> {
@@ -224,6 +336,23 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
           break;
 
         case 'handoff':
+          // Record handoff for cycle detection
+          if (response.nextAction.targetAgent) {
+            this.watchdog.recordHandoff(task.id, agent.role, response.nextAction.targetAgent);
+
+            // Check if handoff limit exceeded
+            if (this.watchdog.isHandoffLimitExceeded(task.id)) {
+              const history = this.watchdog.getHandoffHistory(task.id);
+              const cycleCount = this.watchdog.getHandoffCycleCount(task.id);
+              throw new HandoffCycleLimitError(
+                task.id,
+                cycleCount,
+                this.config.stuckDetection.maxHandoffCycles,
+                history
+              );
+            }
+          }
+
           // Reroute to specified agent
           updatedTask = updateTaskStatus(updatedTask, 'pending');
           if (response.nextAction.targetAgent) {
@@ -272,10 +401,16 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
       .getDependencies(task.id)
       .concat(this.queue.getDependents(task.id));
 
+    // Create FileContext for project file awareness
+    const fileContext = new FileContext({
+      workingDirectory: this.projectContext.workingDirectory,
+    });
+
     return {
       parentTask: undefined,
       relatedTasks,
       projectContext: this.projectContext,
+      fileContext,
       executionHistory: task.attempts,
     };
   }
@@ -298,5 +433,130 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async attemptRecovery(
+    failedTask: Task,
+    error: Error,
+    reason: FailureReason
+  ): Promise<boolean> {
+    if (!this.config.recovery.enabled || !this.taskPlanner) {
+      return false;
+    }
+
+    const attempts = this.replanAttempts.get(failedTask.id) ?? 0;
+    if (attempts >= this.config.recovery.maxReplanAttempts) {
+      return false;
+    }
+
+    this.replanAttempts.set(failedTask.id, attempts + 1);
+    this.emit('taskReplanStarted', failedTask);
+
+    try {
+      // Build feedback for the architect
+      const feedback = this.buildReplanFeedback(failedTask, error, reason);
+
+      // Ask TaskPlanner to refine the failed task
+      const refinedTasks = await this.taskPlanner.refineTask(
+        failedTask,
+        feedback,
+        this.projectContext
+      );
+
+      if (refinedTasks.length === 0) {
+        throw new Error('Replanning produced no tasks');
+      }
+
+      // Replace failed task with refined tasks
+      this.queue.replaceWithRefinedTasks(failedTask.id, refinedTasks, true);
+      this.emit('taskReplanned', failedTask, refinedTasks);
+
+      return true;
+    } catch (replanError) {
+      this.emit('taskReplanFailed', failedTask, replanError as Error);
+      return false;
+    }
+  }
+
+  private buildReplanFeedback(task: Task, error: Error, reason: FailureReason): string {
+    const lastAttempt = task.attempts[task.attempts.length - 1];
+
+    let feedback = `Task failed with error: ${error.message}\n`;
+    feedback += `Failure reason: ${reason}\n`;
+    feedback += `Attempts made: ${task.attempts.length}\n`;
+
+    if (reason === 'handoff_limit') {
+      feedback += '\nThe task caused too many handoffs between agents. ';
+      feedback += 'Please break it into smaller, more focused tasks that can be completed by a single agent.\n';
+    } else if (reason === 'no_confident_agent') {
+      feedback += '\nNo agent was confident enough to handle this task. ';
+      feedback += 'Please simplify the task or break it into parts that match agent capabilities.\n';
+    } else if (reason === 'timeout' || reason === 'agent_stuck') {
+      feedback += '\nThe task took too long or the agent got stuck. ';
+      feedback += 'Please break it into smaller, quicker tasks.\n';
+    }
+
+    if (lastAttempt?.output) {
+      feedback += `\nLast output before failure:\n${lastAttempt.output.slice(0, 500)}\n`;
+    }
+
+    return feedback;
+  }
+
+  private async handleTaskFailure(
+    task: Task,
+    error: Error,
+    reason: FailureReason
+  ): Promise<void> {
+    // Mark task as failed with failure info
+    const failedTask: Task = {
+      ...task,
+      status: 'failed',
+      failureInfo: {
+        reason,
+        message: error.message,
+        timestamp: new Date(),
+        replanAttempted: false,
+      },
+    };
+    this.queue.update(failedTask);
+    this.emit('taskFailed', failedTask, error);
+
+    // Attempt recovery via replanning
+    const recovered = await this.attemptRecovery(failedTask, error, reason);
+
+    if (recovered) {
+      // Update failure info to show replan was attempted
+      const updatedTask = this.queue.get(failedTask.id);
+      if (updatedTask && updatedTask.failureInfo) {
+        updatedTask.failureInfo.replanAttempted = true;
+        this.queue.update(updatedTask);
+      }
+      return; // Recovery successful, continue with new tasks
+    }
+
+    // Recovery failed - cascade failure to dependents
+    if (this.config.recovery.cascadeOnReplanFailure) {
+      const cascaded = this.queue.cascadeFailure(failedTask);
+      for (const t of cascaded) {
+        this.emit('taskCascadeFailed', t, failedTask);
+      }
+    }
+  }
+
+  private determineFailureReason(error: Error): FailureReason {
+    if (error instanceof NoConfidentAgentError) {
+      return 'no_confident_agent';
+    }
+    if (error instanceof HandoffCycleLimitError) {
+      return 'handoff_limit';
+    }
+    if (error instanceof TaskTimeoutError) {
+      return 'timeout';
+    }
+    if (error instanceof AgentStuckError) {
+      return 'agent_stuck';
+    }
+    return 'execution_error';
   }
 }

@@ -7,6 +7,17 @@ export const DEFAULT_TASK_TIMEOUT_MS = 300000; // 5 minutes
 export const DEFAULT_SHORT_TERM_MAX_SIZE = 1000;
 export const DEFAULT_SHORT_TERM_TTL_MS = 3600000; // 1 hour
 
+// Activity watchdog defaults
+export const DEFAULT_ACTIVITY_TIMEOUT_MS = 30000; // 30 seconds
+export const DEFAULT_CHECK_INTERVAL_MS = 5000; // 5 seconds
+export const DEFAULT_MAX_HANDOFF_CYCLES = 5;
+export const DEFAULT_LLM_GRACE_PERIOD_MS = 120000; // 2 minutes for LLM calls
+
+// Recovery defaults
+export const DEFAULT_RECOVERY_ENABLED = true;
+export const DEFAULT_MAX_REPLAN_ATTEMPTS = 2;
+export const DEFAULT_CASCADE_ON_REPLAN_FAILURE = true;
+
 export function getDefaultConfig(): MaestroConfig {
   return {
     llm: {

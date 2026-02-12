@@ -7,6 +7,15 @@ import { NoConfidentAgentError } from '../../utils/errors.js';
 export interface RouterConfig {
   confidenceThreshold: number;
   parallelAssessment: boolean;
+  recoveryEnabled: boolean;
+}
+
+export interface RecoveryResult {
+  attempted: boolean;
+  agent?: Agent;
+  originalScore?: ConfidenceScore;
+  enhancedScore?: ConfidenceScore;
+  success: boolean;
 }
 
 export interface RoutingDecision {
@@ -14,6 +23,7 @@ export interface RoutingDecision {
   score: ConfidenceScore;
   alternatives: AgentAssessment[];
   reason: string;
+  recoveryAttempt?: RecoveryResult;
 }
 
 export class ConfidenceRouter {
@@ -25,6 +35,7 @@ export class ConfidenceRouter {
     this.config = {
       confidenceThreshold: config.confidenceThreshold ?? 0.6,
       parallelAssessment: config.parallelAssessment ?? true,
+      recoveryEnabled: config.recoveryEnabled ?? true,
     };
   }
 
@@ -53,13 +64,30 @@ export class ConfidenceRouter {
     // Check if best agent meets threshold
     const best = assessments[0];
     if (!best || best.score.confidence < this.config.confidenceThreshold) {
+      // Attempt recovery before failing
+      if (this.config.recoveryEnabled) {
+        const recoveryResult = await this.attemptRecovery(task, context, assessments);
+
+        if (recoveryResult.success && recoveryResult.agent && recoveryResult.enhancedScore) {
+          return {
+            selectedAgent: recoveryResult.agent,
+            score: recoveryResult.enhancedScore,
+            alternatives: assessments.filter((a) => a.agent.id !== recoveryResult.agent!.id),
+            reason: `Recovery successful: ${recoveryResult.agent.role} improved from ${recoveryResult.originalScore?.confidence.toFixed(2)} to ${recoveryResult.enhancedScore.confidence.toFixed(2)}`,
+            recoveryAttempt: recoveryResult,
+          };
+        }
+      }
+
+      // Recovery failed or disabled - throw original error
       throw new NoConfidentAgentError(
         task.id,
         assessments.map((a) => ({
           agentId: a.agent.id,
           confidence: a.score.confidence,
         })),
-        this.config.confidenceThreshold
+        this.config.confidenceThreshold,
+        this.config.recoveryEnabled
       );
     }
 
@@ -186,5 +214,78 @@ export class ConfidenceRouter {
 
   getThreshold(): number {
     return this.config.confidenceThreshold;
+  }
+
+  private async attemptRecovery(
+    task: Task,
+    context: TaskContext,
+    assessments: AgentAssessment[]
+  ): Promise<RecoveryResult> {
+    // Select candidate: idle agent with LOWEST confidence (most room to improve)
+    const candidate = this.selectRecoveryCandidate(assessments);
+    if (!candidate) {
+      return { attempted: false, success: false };
+    }
+
+    // Enhance context with task-specific information
+    const enhancedContext = this.enhanceContext(task, context, candidate.agent);
+
+    // Re-assess with enhanced context
+    try {
+      const enhancedScore = await candidate.agent.assessTask(task, enhancedContext);
+
+      return {
+        attempted: true,
+        agent: candidate.agent,
+        originalScore: candidate.score,
+        enhancedScore,
+        success: enhancedScore.confidence >= this.config.confidenceThreshold,
+      };
+    } catch {
+      return { attempted: true, success: false };
+    }
+  }
+
+  private selectRecoveryCandidate(assessments: AgentAssessment[]): AgentAssessment | null {
+    // Filter to idle agents only
+    const idleAssessments = assessments.filter((a) => a.agent.getStatus() === 'idle');
+    if (idleAssessments.length === 0) return null;
+
+    // Select agent with LOWEST confidence - most room for improvement
+    // Assessments are sorted highest first, so get the last one
+    return idleAssessments[idleAssessments.length - 1] ?? null;
+  }
+
+  private enhanceContext(_task: Task, context: TaskContext, agent: Agent): TaskContext {
+    // Add hints to help the agent understand the task better
+    const recoveryHints = [
+      `RECOVERY HINT: You are being asked to reconsider this task.`,
+      `Your capabilities (${agent.capabilities.join(', ')}) are relevant here.`,
+      `Focus on what you CAN do. A partial solution is better than no solution.`,
+      `Consider: Can you handle just the core requirement?`,
+    ].join('\n');
+
+    return {
+      ...context,
+      projectContext: {
+        ...context.projectContext,
+        constraints: [
+          ...context.projectContext.constraints,
+          'Partial solutions are acceptable',
+          'Focus on core requirements first',
+        ],
+      },
+      executionHistory: [
+        ...context.executionHistory,
+        {
+          agentId: 'system',
+          agentRole: agent.role,
+          startedAt: new Date(),
+          success: false,
+          output: recoveryHints,
+          artifacts: [],
+        },
+      ],
+    };
   }
 }
