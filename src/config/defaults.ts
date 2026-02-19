@@ -62,6 +62,11 @@ export function getDefaultConfig(): MaestroConfig {
         confidenceThreshold: DEFAULT_CONFIDENCE_THRESHOLD,
         maxRetries: DEFAULT_MAX_RETRIES,
       },
+      devops: {
+        enabled: true,
+        confidenceThreshold: DEFAULT_CONFIDENCE_THRESHOLD,
+        maxRetries: DEFAULT_MAX_RETRIES,
+      },
     },
     orchestration: {
       defaultConfidenceThreshold: DEFAULT_CONFIDENCE_THRESHOLD,

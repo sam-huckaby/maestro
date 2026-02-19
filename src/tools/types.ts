@@ -120,3 +120,38 @@ export const FILE_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
 ];
+
+// Command execution tools for DevOps agent
+export const COMMAND_TOOLS: ToolDefinition[] = [
+  {
+    name: 'run_command',
+    description:
+      'Execute a shell command for build, test, or lint operations. Only allowed commands are permitted (npm, yarn, cargo, go, make, etc.). Dangerous commands like rm, sudo, curl, wget are blocked.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'The command to execute (e.g., "npm run build", "cargo test")',
+        },
+        timeout_ms: {
+          type: 'number',
+          description: 'Timeout in milliseconds (default: 60000, max: 300000)',
+        },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'detect_project_type',
+    description:
+      'Analyze the project to detect its type, build system, and available commands. Returns information about package.json, Cargo.toml, go.mod, Makefile, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        // No additional properties needed - analyzes current project
+      },
+      required: [],
+    },
+  },
+];

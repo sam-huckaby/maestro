@@ -126,6 +126,22 @@ export class HandoffCycleLimitError extends TaskError {
   }
 }
 
+export class DeadlockError extends TaskError {
+  public readonly blockedCount: number;
+  public readonly blockedTaskIds: string[];
+
+  constructor(blockedCount: number, blockedTaskIds: string[]) {
+    super(
+      `Deadlock detected: ${blockedCount} blocked tasks with no tasks in progress`,
+      blockedTaskIds[0] ?? 'unknown',
+      { blockedCount, blockedTaskIds }
+    );
+    this.name = 'DeadlockError';
+    this.blockedCount = blockedCount;
+    this.blockedTaskIds = blockedTaskIds;
+  }
+}
+
 export class TaskDependencyError extends TaskError {
   public readonly blockedBy: string[];
 

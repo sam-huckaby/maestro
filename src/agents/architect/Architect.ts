@@ -1,10 +1,11 @@
 import { Agent, type AgentDependencies } from '../base/Agent.js';
-import type { AgentConfig } from '../base/types.js';
+import type { AgentConfig, AgentResponse } from '../base/types.js';
 import type { Task, TaskContext } from '../../tasks/types.js';
 import {
   ARCHITECT_SYSTEM_PROMPT,
   ARCHITECT_EXECUTION_PROMPT_TEMPLATE,
 } from './prompts.js';
+import { logger } from '../../cli/ui/logger.js';
 
 export class Architect extends Agent {
   constructor(dependencies: AgentDependencies, configOverrides?: Partial<AgentConfig>) {
@@ -20,6 +21,70 @@ export class Architect extends Agent {
 
   get systemPrompt(): string {
     return ARCHITECT_SYSTEM_PROMPT;
+  }
+
+  async execute(task: Task, context: TaskContext): Promise<AgentResponse> {
+    logger.divider();
+    logger.agent(this.role, `Starting design for: ${task.goal}`);
+
+    const response = await super.execute(task, context);
+
+    this.logDesignSummary(response, task);
+
+    return response;
+  }
+
+  private logDesignSummary(response: AgentResponse, task: Task): void {
+    if (!response.success) {
+      logger.error(`Design failed for: ${task.goal}`);
+      return;
+    }
+
+    const output = response.output;
+
+    // Extract overview section
+    const overviewMatch = output.match(/(?:overview|summary)[:\s]*\n?(.*?)(?=\n\n|$)/i);
+    const overview = overviewMatch?.[1]?.trim().slice(0, 100) || 'Design completed';
+
+    // Count components mentioned
+    const componentMatches = output.match(/(?:component|service|module|class)[s]?[:\s]/gi);
+    const componentCount = componentMatches?.length || 0;
+
+    // Count interfaces mentioned
+    const interfaceMatches = output.match(/(?:interface|api|contract|endpoint)[s]?[:\s]/gi);
+    const interfaceCount = interfaceMatches?.length || 0;
+
+    // Summarize artifacts by type
+    const artifactSummary = this.summarizeArtifacts(response.artifacts);
+
+    logger.agent(this.role, 'Design complete:');
+    logger.info(`  Overview: ${overview}`);
+    if (componentCount > 0) {
+      logger.info(`  Components: ${componentCount} identified`);
+    }
+    if (interfaceCount > 0) {
+      logger.info(`  Interfaces: ${interfaceCount} defined`);
+    }
+    if (response.artifacts.length > 0) {
+      logger.info(`  Artifacts: ${response.artifacts.length} generated (${artifactSummary})`);
+    }
+
+    if (response.nextAction?.type === 'handoff') {
+      logger.success(`Design handed off to ${response.nextAction.targetAgent}`);
+    } else {
+      logger.success('Design complete');
+    }
+    logger.divider();
+  }
+
+  private summarizeArtifacts(artifacts: AgentResponse['artifacts']): string {
+    const typeCounts: Record<string, number> = {};
+    for (const artifact of artifacts) {
+      typeCounts[artifact.type] = (typeCounts[artifact.type] || 0) + 1;
+    }
+    return Object.entries(typeCounts)
+      .map(([type, count]) => `${count} ${type}`)
+      .join(', ');
   }
 
   protected async buildExecutionPrompt(task: Task, context: TaskContext): Promise<string> {

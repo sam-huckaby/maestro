@@ -17,7 +17,8 @@ import type { LLMProvider, Message, ContentBlock } from '../../llm/types.js';
 import { AgentError } from '../../utils/errors.js';
 import { getMemoryManager } from '../../memory/MemoryManager.js';
 import { ToolExecutor } from '../../tools/ToolExecutor.js';
-import { FILE_TOOLS, FILE_WRITE_TOOLS } from '../../tools/types.js';
+import { FILE_TOOLS, FILE_WRITE_TOOLS, COMMAND_TOOLS } from '../../tools/types.js';
+import { logger } from '../../cli/ui/logger.js';
 import type { ToolDefinition, ToolUse } from '../../tools/types.js';
 
 export interface AgentDependencies {
@@ -82,6 +83,14 @@ export abstract class Agent {
     return false;
   }
 
+  /**
+   * Whether this agent can run commands.
+   * Override in subclasses to enable command execution.
+   */
+  protected get canRunCommands(): boolean {
+    return false;
+  }
+
   async assessTask(task: Task, context: TaskContext): Promise<ConfidenceScore> {
     const prompt = await this.buildAssessmentPrompt(task, context);
 
@@ -128,7 +137,13 @@ export abstract class Agent {
 
       // Create tool executor if we have file context
       const toolExecutor = context.fileContext
-        ? new ToolExecutor(context.fileContext, this.canWriteFiles)
+        ? new ToolExecutor(
+            context.fileContext,
+            this.canWriteFiles,
+            (path, action) => logger.agent(this.role, `${action}: ${path}`),
+            this.canRunCommands,
+            context.projectContext.workingDirectory
+          )
         : null;
 
       // Multi-turn loop for tool use
@@ -210,10 +225,17 @@ export abstract class Agent {
    * Get the tools available to this agent
    */
   protected getAvailableTools(): ToolDefinition[] {
+    let tools = [...FILE_TOOLS];
+
     if (this.canWriteFiles) {
-      return [...FILE_TOOLS, ...FILE_WRITE_TOOLS];
+      tools = [...tools, ...FILE_WRITE_TOOLS];
     }
-    return FILE_TOOLS;
+
+    if (this.canRunCommands) {
+      tools = [...tools, ...COMMAND_TOOLS];
+    }
+
+    return tools;
   }
 
   /**

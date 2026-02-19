@@ -35,6 +35,10 @@ const AGENT_DESCRIPTIONS: Record<AgentRole, { capabilities: AgentCapability[]; d
     capabilities: ['review', 'testing', 'analysis'],
     description: 'Validates quality, security, and correctness',
   },
+  devops: {
+    capabilities: ['testing', 'analysis'],
+    description: 'Executes build, test, and DevOps commands',
+  },
 };
 
 export const agentsCommand = new Command('agents')

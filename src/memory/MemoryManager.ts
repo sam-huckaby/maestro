@@ -27,6 +27,11 @@ const AGENT_NAMESPACE_ACCESS: Record<AgentRole, SharedNamespace[]> = {
     SharedNamespaces.DECISIONS,
     SharedNamespaces.ERRORS,
   ],
+  devops: [
+    SharedNamespaces.ARTIFACTS,
+    SharedNamespaces.CONTEXT,
+    SharedNamespaces.ERRORS,
+  ],
 };
 
 export class MemoryManager {

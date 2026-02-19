@@ -158,3 +158,141 @@ export function isUnsafeWritePath(relativePath: string): boolean {
 export function getProtectedWritePatterns(): string[] {
   return [...PROTECTED_WRITE_PATTERNS];
 }
+
+// ============================================================================
+// Command Execution Security
+// ============================================================================
+
+// Allowed command prefixes for build/test operations
+const ALLOWED_COMMAND_PREFIXES = [
+  // Node.js package managers
+  'npm ',
+  'npm run ',
+  'npx ',
+  'yarn ',
+  'pnpm ',
+  'bun ',
+  // Rust
+  'cargo ',
+  'rustc ',
+  // Go
+  'go ',
+  'go build',
+  'go test',
+  'go run',
+  // Python
+  'python ',
+  'python3 ',
+  'pytest ',
+  'pip ',
+  'poetry ',
+  'uv ',
+  // Build systems
+  'make ',
+  'cmake ',
+  // Java/Kotlin
+  'gradle ',
+  'gradlew ',
+  './gradlew ',
+  'mvn ',
+  // .NET
+  'dotnet ',
+  // Ruby
+  'bundle ',
+  'rake ',
+  // PHP
+  'composer ',
+  'php ',
+  // Elixir
+  'mix ',
+  // Deno
+  'deno ',
+];
+
+// Commands that are always blocked (security risk)
+const BLOCKED_PATTERNS = [
+  // Destructive commands
+  'rm -rf',
+  'rm -r',
+  'rmdir',
+  // Privilege escalation
+  'sudo',
+  'su ',
+  // Permission changes
+  'chmod',
+  'chown',
+  // Network access (data exfiltration risk)
+  'curl',
+  'wget',
+  'ssh',
+  'scp',
+  'rsync',
+  'nc ',
+  'netcat',
+  // Code execution via pipes
+  '| sh',
+  '| bash',
+  '| zsh',
+  '| /bin/sh',
+  '| /bin/bash',
+  // Eval patterns
+  'eval ',
+  'exec ',
+  // Package publish (accidental release)
+  'npm publish',
+  'yarn publish',
+  'cargo publish',
+  // Git push (handled separately)
+  'git push',
+  'git checkout',
+  'git reset',
+  // Environment manipulation
+  'export ',
+  'source ',
+  '. /',
+];
+
+/**
+ * Check if a command is allowed to be executed
+ */
+export function isAllowedCommand(command: string): { allowed: boolean; reason?: string } {
+  const trimmedCommand = command.trim();
+
+  // Check blocked patterns first (higher priority)
+  for (const pattern of BLOCKED_PATTERNS) {
+    if (trimmedCommand.includes(pattern)) {
+      return {
+        allowed: false,
+        reason: `Command contains blocked pattern: "${pattern}"`
+      };
+    }
+  }
+
+  // Check if command starts with an allowed prefix
+  const isAllowed = ALLOWED_COMMAND_PREFIXES.some(prefix =>
+    trimmedCommand.startsWith(prefix) || trimmedCommand === prefix.trim()
+  );
+
+  if (!isAllowed) {
+    return {
+      allowed: false,
+      reason: `Command must start with an allowed prefix (npm, yarn, cargo, go, make, etc.)`
+    };
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Get all allowed command prefixes (for documentation/prompts)
+ */
+export function getAllowedCommandPrefixes(): string[] {
+  return [...ALLOWED_COMMAND_PREFIXES];
+}
+
+/**
+ * Get all blocked command patterns (for documentation/prompts)
+ */
+export function getBlockedCommandPatterns(): string[] {
+  return [...BLOCKED_PATTERNS];
+}

@@ -17,6 +17,7 @@ import {
   NoConfidentAgentError,
   AgentStuckError,
   HandoffCycleLimitError,
+  DeadlockError,
 } from '../../utils/errors.js';
 import { FileContext } from '../../context/FileContext.js';
 import {
@@ -24,6 +25,7 @@ import {
   type WatchdogConfig,
   getDefaultWatchdogConfig,
 } from './ActivityWatchdog.js';
+import { logger } from '../../cli/ui/logger.js';
 import {
   DEFAULT_RECOVERY_ENABLED,
   DEFAULT_MAX_REPLAN_ATTEMPTS,
@@ -73,6 +75,8 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
   private currentAgentByTask: Map<string, Agent> = new Map();
   private taskPlanner?: TaskPlanner;
   private replanAttempts: Map<string, number> = new Map();
+  private deadlockRecoveryAttempts = 0;
+  private readonly maxDeadlockRecoveryAttempts = 2;
 
   constructor(
     queue: TaskQueue,
@@ -127,6 +131,7 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
 
     this.running = true;
     this.results = [];
+    this.deadlockRecoveryAttempts = 0;
     this.emit('loopStarted');
 
     // Start the watchdog
@@ -140,7 +145,32 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
           // No tasks ready - check if we're blocked
           const blocked = this.queue.getBlocked();
           if (blocked.length > 0 && this.queue.getInProgress().length === 0) {
-            throw new Error(`Deadlock detected: ${blocked.length} blocked tasks with no tasks in progress`);
+            // Find tasks stuck in reviewing status that may be causing the blockage
+            const stuckTasks = this.queue.getByStatus('reviewing').filter(
+              t => t.attempts.length >= this.config.maxRetries
+            );
+
+            if (stuckTasks.length > 0 && this.deadlockRecoveryAttempts < this.maxDeadlockRecoveryAttempts) {
+              this.deadlockRecoveryAttempts++;
+              logger.debug(`[Recovery] Deadlock detected (attempt ${this.deadlockRecoveryAttempts}/${this.maxDeadlockRecoveryAttempts}), found ${stuckTasks.length} stuck reviewing tasks`);
+
+              for (const stuckTask of stuckTasks) {
+                logger.debug(`[Recovery] Attempting recovery on stuck task: ${stuckTask.id}`);
+                await this.handleTaskFailure(
+                  stuckTask,
+                  new Error('Task stuck in reviewing status causing deadlock'),
+                  'execution_error'
+                );
+              }
+              continue; // Retry the loop after recovery attempts
+            }
+
+            // Log diagnostic info before throwing
+            const allTasks = this.queue.getAll();
+            logger.debug(`[Deadlock] Blocked tasks: ${blocked.map(t => `${t.id}:${t.goal.slice(0,30)}`).join(', ')}`);
+            logger.debug(`[Deadlock] All task states: ${allTasks.map(t => `${t.id}:${t.status}`).join(', ')}`);
+
+            throw new DeadlockError(blocked.length, blocked.map(t => t.id));
           }
           // Wait a bit for in-progress tasks
           await this.delay(100);
@@ -227,6 +257,7 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
 
         // Clear watchdog state for handoff limit errors
         if (error instanceof HandoffCycleLimitError) {
+          logger.debug(`[Recovery] Caught HandoffCycleLimitError for task ${currentTask.id}`);
           this.watchdog.clearTask(currentTask.id);
         }
 
@@ -440,12 +471,19 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     error: Error,
     reason: FailureReason
   ): Promise<boolean> {
+    logger.debug(`[Recovery] attemptRecovery entry - task: ${failedTask.id}`);
+    logger.debug(`[Recovery] Gates: enabled=${this.config.recovery.enabled}, planner=${!!this.taskPlanner}`);
+
     if (!this.config.recovery.enabled || !this.taskPlanner) {
+      logger.debug(`[Recovery] Skipped - recovery disabled or no planner`);
       return false;
     }
 
     const attempts = this.replanAttempts.get(failedTask.id) ?? 0;
+    logger.debug(`[Recovery] Attempts: ${attempts}/${this.config.recovery.maxReplanAttempts}`);
+
     if (attempts >= this.config.recovery.maxReplanAttempts) {
+      logger.debug(`[Recovery] Skipped - max replan attempts reached`);
       return false;
     }
 
@@ -455,6 +493,7 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     try {
       // Build feedback for the architect
       const feedback = this.buildReplanFeedback(failedTask, error, reason);
+      logger.debug(`[Recovery] Calling taskPlanner.refineTask`);
 
       // Ask TaskPlanner to refine the failed task
       const refinedTasks = await this.taskPlanner.refineTask(
@@ -462,6 +501,7 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
         feedback,
         this.projectContext
       );
+      logger.debug(`[Recovery] refineTask returned ${refinedTasks.length} tasks`);
 
       if (refinedTasks.length === 0) {
         throw new Error('Replanning produced no tasks');
@@ -470,9 +510,11 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
       // Replace failed task with refined tasks
       this.queue.replaceWithRefinedTasks(failedTask.id, refinedTasks, true);
       this.emit('taskReplanned', failedTask, refinedTasks);
+      logger.debug(`[Recovery] Successfully replaced with refined tasks`);
 
       return true;
     } catch (replanError) {
+      logger.debug(`[Recovery] refineTask failed: ${replanError}`);
       this.emit('taskReplanFailed', failedTask, replanError as Error);
       return false;
     }
@@ -508,6 +550,7 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     error: Error,
     reason: FailureReason
   ): Promise<void> {
+    logger.debug(`[Recovery] handleTaskFailure - task: ${task.id}, reason: ${reason}`);
     // Mark task as failed with failure info
     const failedTask: Task = {
       ...task,
@@ -523,7 +566,9 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     this.emit('taskFailed', failedTask, error);
 
     // Attempt recovery via replanning
+    logger.debug(`[Recovery] Calling attemptRecovery - enabled: ${this.config.recovery.enabled}, hasPlanner: ${!!this.taskPlanner}`);
     const recovered = await this.attemptRecovery(failedTask, error, reason);
+    logger.debug(`[Recovery] attemptRecovery returned: ${recovered}`);
 
     if (recovered) {
       // Update failure info to show replan was attempted

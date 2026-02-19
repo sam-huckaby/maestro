@@ -12,6 +12,7 @@ import { ORCHESTRATOR_SYSTEM_PROMPT } from './prompts.js';
 import { createArchitect } from '../architect/Architect.js';
 import { createImplementer } from '../implementer/Implementer.js';
 import { createReviewer } from '../reviewer/Reviewer.js';
+import { createDevOps } from '../devops/DevOps.js';
 import type { LLMProvider } from '../../llm/types.js';
 
 export interface OrchestratorEvents {
@@ -107,6 +108,7 @@ export class Orchestrator extends Agent {
     this.registry.register(createArchitect(dependencies));
     this.registry.register(createImplementer(dependencies));
     this.registry.register(createReviewer(dependencies));
+    this.registry.register(createDevOps(dependencies));
   }
 
   async ship(goal: string): Promise<TaskResult[]> {
@@ -127,7 +129,8 @@ export class Orchestrator extends Agent {
           maxRetries: this.orchestratorConfig.maxTaskRetries,
           taskTimeoutMs: this.orchestratorConfig.taskTimeoutMs,
           reviewRequired: this.orchestratorConfig.reviewRequired,
-        }
+        },
+        this.taskPlanner  // enables recovery via replanning
       );
 
       // Forward events
@@ -166,7 +169,8 @@ export class Orchestrator extends Agent {
         maxRetries: this.orchestratorConfig.maxTaskRetries,
         taskTimeoutMs: this.orchestratorConfig.taskTimeoutMs,
         reviewRequired: this.orchestratorConfig.reviewRequired,
-      }
+      },
+      this.taskPlanner  // enables recovery via replanning
     );
 
     const results = await this.executionLoop.run();

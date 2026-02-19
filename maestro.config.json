@@ -49,7 +49,12 @@
       "walMode": true
     },
     "shared": {
-      "namespaces": ["artifacts", "decisions", "context", "errors"]
+      "namespaces": [
+        "artifacts",
+        "decisions",
+        "context",
+        "errors"
+      ]
     }
   },
   "cli": {

@@ -19,6 +19,7 @@ export type {
 export { Architect, createArchitect } from './architect/index.js';
 export { Implementer, createImplementer } from './implementer/index.js';
 export { Reviewer, createReviewer, type ReviewVerdict, type ReviewResult } from './reviewer/index.js';
+export { DevOps, createDevOps } from './devops/index.js';
 
 // Orchestrator
 export {

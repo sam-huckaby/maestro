@@ -1,6 +1,7 @@
 import type { LLMProvider, ContentBlock } from '../../llm/types.js';
 import type { Task, TaskDecomposition, ProjectContext } from '../../tasks/types.js';
 import { createTask } from '../../tasks/Task.js';
+import { logger } from '../../cli/ui/logger.js';
 
 /**
  * Extract text content from LLM response
@@ -182,6 +183,9 @@ Create a logical task breakdown with clear dependencies.
     feedback: string,
     projectContext: ProjectContext
   ): Promise<Task[]> {
+    logger.debug(`[Recovery] TaskPlanner.refineTask called - task: ${task.id}`);
+    logger.debug(`[Recovery] Feedback preview: ${feedback.slice(0, 200)}...`);
+
     const prompt = `
 FAILED TASK: ${task.goal}
 DESCRIPTION: ${task.description}
@@ -206,8 +210,10 @@ Focus on simpler, more achievable tasks.
       temperature: 0.5,
     });
 
+    logger.debug(`[Recovery] LLM response received, parsing...`);
     const textContent = extractTextContent(response.content);
     const parsed = this.parsePlanResponse(textContent, task.goal);
+    logger.debug(`[Recovery] Parsed ${parsed.length} refined tasks`);
 
     return parsed.map((item) =>
       createTask({

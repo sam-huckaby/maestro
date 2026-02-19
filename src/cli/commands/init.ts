@@ -43,6 +43,11 @@ const DEFAULT_CONFIG = {
       confidenceThreshold: 0.6,
       maxRetries: 3,
     },
+    devops: {
+      enabled: true,
+      confidenceThreshold: 0.6,
+      maxRetries: 3,
+    },
   },
   memory: {
     shortTerm: {
