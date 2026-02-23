@@ -17,6 +17,7 @@ import { resetAgentRegistry } from '../../agents/base/AgentRegistry.js';
 const DEFAULT_MAX_TRIES = 5;
 const MAX_DEVOPS_CONTEXT_CHARS = 3000;
 const MAX_IMPLEMENTER_CONTEXT_CHARS = 12000;
+const MAX_PROFILE_CONTEXT_CHARS = 4000;
 
 interface RepairOptions {
   tries?: string;
@@ -89,6 +90,17 @@ export const repairCommand = new Command('repair')
       const iterations: RepairIterationResult[] = [];
       let latestImplementerOutput = '';
       let repairSucceeded = false;
+      let projectProfile = '';
+
+      if (!options.json) {
+        logger.agent('devops', 'Initial run: identifying project type and tech stack');
+      }
+
+      projectProfile = await runInitialProjectProfile(devops, taskContext, options);
+
+      if (options.verbose && !options.json) {
+        logger.debug(`Project profile: ${truncateForLog(projectProfile, 800)}`);
+      }
 
       for (let attempt = 1; attempt <= maxTries; attempt++) {
         if (!options.json) {
@@ -99,7 +111,7 @@ export const repairCommand = new Command('repair')
           goal: 'Build the current project and report any errors that block success.',
           description: 'Detect project type, run a build command, and return actionable error details.',
           handoff: {
-            context: buildDevOpsContext(attempt, maxTries, latestImplementerOutput),
+            context: buildDevOpsContext(attempt, maxTries, latestImplementerOutput, projectProfile),
             constraints: [
               'Focus on build/compile errors and include exact failure details.',
               'If build fails, provide actionable errors for Implementer to fix.',
@@ -143,7 +155,7 @@ export const repairCommand = new Command('repair')
           goal: 'Fix the project based on DevOps build errors.',
           description: 'Apply minimal code changes to resolve current build failures.',
           handoff: {
-            context: buildImplementerContext(attempt, maxTries, devopsResponse.output),
+            context: buildImplementerContext(attempt, maxTries, projectProfile, devopsResponse.output),
             constraints: [
               'Make targeted fixes for reported build errors.',
               'Avoid unrelated refactors unless required for build stability.',
@@ -166,6 +178,7 @@ export const repairCommand = new Command('repair')
         success: repairSucceeded,
         maxTries,
         attempts: iterations.length,
+        projectProfile,
         iterations,
       };
 
@@ -219,8 +232,48 @@ function createStepResult(response: AgentResponse): RepairStepResult {
   };
 }
 
-function buildDevOpsContext(attempt: number, maxTries: number, latestImplementerOutput: string): string {
+async function runInitialProjectProfile(
+  devops: ReturnType<typeof createDevOps>,
+  taskContext: TaskContext,
+  options: RepairOptions
+): Promise<string> {
+  const profileTask = createTask({
+    goal: 'Identify project type, tech stack, and likely build/test commands.',
+    description: 'Analyze the repository and provide stack context for the implementer before repairs begin.',
+    handoff: {
+      context: [
+        'This is the first repair pass.',
+        'Determine project type and tech stack so implementation starts with the right context.',
+        'Use detect_project_type and inspect key config files as needed.',
+      ].join(' '),
+      constraints: [
+        'Do not modify files.',
+        'Include languages, frameworks, package/build tools, and likely build command(s).',
+      ],
+    },
+  });
+
+  const profileResponse = await devops.execute(profileTask, taskContext);
+
+  if (!options.json) {
+    logger.success('Captured project profile from DevOps');
+  }
+
+  return profileResponse.output;
+}
+
+function buildDevOpsContext(
+  attempt: number,
+  maxTries: number,
+  latestImplementerOutput: string,
+  projectProfile: string
+): string {
   let context = `Repair loop ${attempt} of ${maxTries}. Build the current project and report any blocking errors.`;
+
+  if (projectProfile.trim()) {
+    context += '\n\nProject profile (from initial DevOps analysis):\n';
+    context += truncateForContext(projectProfile, MAX_PROFILE_CONTEXT_CHARS);
+  }
 
   if (latestImplementerOutput.trim()) {
     context += '\n\nLatest implementer summary:\n';
@@ -230,10 +283,18 @@ function buildDevOpsContext(attempt: number, maxTries: number, latestImplementer
   return context;
 }
 
-function buildImplementerContext(attempt: number, maxTries: number, devopsOutput: string): string {
+function buildImplementerContext(
+  attempt: number,
+  maxTries: number,
+  projectProfile: string,
+  devopsOutput: string
+): string {
   return [
     `DevOps build failed during repair loop ${attempt} of ${maxTries}.`,
     'Use the error details below to fix the project so the next build can pass.',
+    '',
+    'Project profile from DevOps initial analysis:',
+    truncateForContext(projectProfile, MAX_PROFILE_CONTEXT_CHARS),
     '',
     'DevOps output:',
     truncateForContext(devopsOutput, MAX_IMPLEMENTER_CONTEXT_CHARS),
