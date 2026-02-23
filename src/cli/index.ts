@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { initCommand } from './commands/init.js';
+import { repairCommand } from './commands/repair.js';
 import { shipCommand } from './commands/ship.js';
 import { statusCommand } from './commands/status.js';
 import { agentsCommand } from './commands/agents.js';
@@ -14,6 +15,7 @@ export function createCli(): Command {
     .version('1.0.0');
 
   program.addCommand(initCommand);
+  program.addCommand(repairCommand);
   program.addCommand(shipCommand);
   program.addCommand(statusCommand);
   program.addCommand(agentsCommand);
