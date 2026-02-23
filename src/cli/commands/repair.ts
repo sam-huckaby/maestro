@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { basename } from 'node:path';
 import { Config } from '../../config/Config.js';
 import { logger } from '../ui/index.js';
 import { formatError } from '../../utils/errors.js';
@@ -59,10 +60,13 @@ export const repairCommand = new Command('repair')
 
       initializeMemory(config.memory);
 
+      const workingDirectory = process.cwd();
+      const projectName = resolveProjectName(workingDirectory);
+
       const projectContext: ProjectContext = {
-        name: 'maestro-project',
+        name: projectName,
         description: 'Repair project build errors',
-        workingDirectory: process.cwd(),
+        workingDirectory,
         constraints: [],
         preferences: {},
       };
@@ -249,4 +253,9 @@ function truncateForLog(value: string, maxChars = 500): string {
     return value;
   }
   return `${value.slice(0, maxChars)}...`;
+}
+
+function resolveProjectName(workingDirectory: string): string {
+  const derivedName = basename(workingDirectory).trim();
+  return derivedName.length > 0 ? derivedName : 'current-project';
 }
