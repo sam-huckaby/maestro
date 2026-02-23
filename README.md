@@ -54,6 +54,9 @@ export ANTHROPIC_API_KEY="your-api-key"
 
 # Ship a feature
 maestro ship "Add user authentication"
+
+# Repair build errors in current project
+maestro repair
 ```
 
 ## Configuration
@@ -138,6 +141,21 @@ maestro ship "Fix login bug" --dry-run
 
 # Output as JSON
 maestro ship "Add caching" --json
+```
+
+### Repair Build Errors
+
+Run a DevOps -> Implementer loop to diagnose build failures and apply fixes automatically.
+
+```bash
+# Basic usage (defaults to 5 loops)
+maestro repair
+
+# Increase max repair attempts
+maestro repair --tries 10
+
+# Output as JSON
+maestro repair --json
 ```
 
 ### Check Status
