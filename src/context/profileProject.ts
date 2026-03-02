@@ -7,6 +7,7 @@ import { logger } from '../cli/ui/index.js';
 export interface ProjectProfile {
   buildCommand: string;
   testCommand: string;
+  installCommand: string;
   languages: string[];
   bundler: string | null;
   packageManager: string | null;
@@ -50,6 +51,7 @@ function buildProfileSystemPrompt(): string {
     '{',
     '  "buildCommand": "the exact shell command to build this project (e.g. npm run build, cargo build)",',
     '  "testCommand": "the exact shell command to run tests (e.g. npm test, cargo test)",',
+    '  "installCommand": "the exact shell command to install dependencies (e.g. npm install, pnpm install, cargo fetch)",',
     '  "languages": ["list", "of", "languages"],',
     '  "bundler": "bundler name or null (e.g. vite, webpack, esbuild, turbopack, rollup)",',
     '  "packageManager": "package manager or null (e.g. npm, pnpm, yarn, bun, cargo)",',
@@ -65,6 +67,7 @@ function buildProfileSystemPrompt(): string {
     '- For monorepos, check for workspaces config in package.json, pnpm-workspace.yaml, or lerna.json.',
     '- If there is no build command, set buildCommand to "echo no build configured".',
     '- If there is no test command, set testCommand to "echo no tests configured".',
+    '- If there is no install command, set installCommand to "echo no install configured".',
     '- Return ONLY the raw JSON object. No markdown fences, no explanation, no extra text.',
   ].join('\n');
 }
@@ -133,6 +136,8 @@ function collectProfileErrors(obj: Record<string, unknown>): string[] {
     errors.push('buildCommand must be a non-empty string');
   if (typeof obj.testCommand !== 'string' || obj.testCommand === '')
     errors.push('testCommand must be a non-empty string');
+  if (typeof obj.installCommand !== 'string' || obj.installCommand === '')
+    errors.push('installCommand must be a non-empty string');
   if (!Array.isArray(obj.languages) || obj.languages.length === 0)
     errors.push('languages must be a non-empty array of strings');
   if (typeof obj.monorepo !== 'boolean') errors.push('monorepo must be a boolean');
@@ -163,6 +168,7 @@ function validateProfileResponse(text: string): ValidationResult {
     profile: {
       buildCommand: obj.buildCommand as string,
       testCommand: obj.testCommand as string,
+      installCommand: obj.installCommand as string,
       languages: obj.languages as string[],
       bundler: typeof obj.bundler === 'string' ? obj.bundler : null,
       packageManager: typeof obj.packageManager === 'string' ? obj.packageManager : null,

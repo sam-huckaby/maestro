@@ -220,7 +220,7 @@ export class DevOps extends Agent {
   }
 
   protected parseExecutionResponse(response: string, task: Task): AgentResponse {
-    const knownCommand = task.metadata.buildCommand as string | undefined;
+    const knownCommand = task.metadata.phaseCommand as string | undefined;
     const buildResult = parseBuildResult(response, knownCommand);
     const buildArtifact = createBuildArtifact(task.id, buildResult);
     const codeArtifacts = extractCodeBlockArtifacts(task.id, response, (lang) =>

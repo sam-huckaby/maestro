@@ -1,8 +1,23 @@
 import { cosmiconfig } from 'cosmiconfig';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { getDefaultConfig, getConfigSearchPlaces, getEnvVariables } from './defaults.js';
 import type { MaestroConfig, ResolvedConfig, ConfigSource } from './types.js';
+import type { ProjectProfile } from '../context/profileProject.js';
 import { ConfigurationError } from '../utils/errors.js';
+
+const ProjectProfileSchema = z.object({
+  buildCommand: z.string(),
+  testCommand: z.string(),
+  installCommand: z.string(),
+  languages: z.array(z.string()),
+  bundler: z.string().nullable(),
+  packageManager: z.string().nullable(),
+  framework: z.string().nullable(),
+  monorepo: z.boolean(),
+  notes: z.string(),
+});
 
 const ConfigSchema = z.object({
   llm: z.object({
@@ -54,14 +69,17 @@ const ConfigSchema = z.object({
     includeTimestamp: z.boolean(),
     includeAgentId: z.boolean(),
   }),
+  project: ProjectProfileSchema.optional(),
 });
 
 export class Config {
   private static instance: Config | null = null;
   private config: ResolvedConfig;
+  private configFilePath: string | null;
 
-  private constructor(config: ResolvedConfig) {
+  private constructor(config: ResolvedConfig, configFilePath: string | null) {
     this.config = config;
+    this.configFilePath = configFilePath;
   }
 
   static async load(overrides?: Partial<MaestroConfig>): Promise<Config> {
@@ -74,10 +92,12 @@ export class Config {
     });
 
     let fileConfig: Partial<MaestroConfig> = {};
+    let loadedFilePath: string | null = null;
     try {
       const result = await explorer.search();
       if (result && !result.isEmpty) {
         fileConfig = result.config;
+        loadedFilePath = result.filepath;
         sources.push({ path: result.filepath, type: 'file' });
       }
     } catch (error) {
@@ -112,7 +132,7 @@ export class Config {
       sources,
     };
 
-    Config.instance = new Config(resolvedConfig);
+    Config.instance = new Config(resolvedConfig, loadedFilePath);
     return Config.instance;
   }
 
@@ -220,6 +240,10 @@ export class Config {
     return this.config.logging;
   }
 
+  get project(): ProjectProfile | undefined {
+    return this.config.project;
+  }
+
   get sources() {
     return this.config.sources;
   }
@@ -232,5 +256,30 @@ export class Config {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { sources: _, ...config } = this.config;
     return config;
+  }
+
+  private resolveConfigFilePath(): string {
+    if (this.configFilePath && this.configFilePath.endsWith('.json')) {
+      return this.configFilePath;
+    }
+    return join(process.cwd(), 'maestro.config.json');
+  }
+
+  private readJsonFile(filePath: string): Record<string, unknown> {
+    try {
+      const raw = readFileSync(filePath, 'utf-8');
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
+  saveProjectProfile(profile: ProjectProfile): string {
+    const filePath = this.resolveConfigFilePath();
+    const existing = this.readJsonFile(filePath);
+    existing.project = profile;
+    writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+    this.config.project = profile;
+    return filePath;
   }
 }

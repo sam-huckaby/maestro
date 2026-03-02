@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { LLMConfig } from '../llm/types.js';
 import type { MemoryManagerConfig } from '../memory/types.js';
 import type { AgentRole } from '../agents/base/types.js';
+import type { ProjectProfile } from '../context/profileProject.js';
 
 export const LogLevelSchema = z.enum(['debug', 'info', 'warn', 'error', 'silent']);
 export type LogLevel = z.infer<typeof LogLevelSchema>;
@@ -20,6 +21,7 @@ export interface MaestroConfig {
   orchestration: OrchestrationConfig;
   cli: CliConfig;
   logging: LoggingConfig;
+  project?: ProjectProfile;
 }
 
 export interface OrchestrationConfig {

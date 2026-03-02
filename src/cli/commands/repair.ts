@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { basename } from 'node:path';
+import { spawn } from 'node:child_process';
 import { Config } from '../../config/Config.js';
 import { logger } from '../ui/index.js';
 import { formatError } from '../../utils/errors.js';
@@ -15,11 +16,20 @@ import type { AgentResponse } from '../../agents/base/types.js';
 import type { TaskContext, ProjectContext } from '../../tasks/types.js';
 import { initializeMemory, closeMemory } from '../../memory/MemoryManager.js';
 import { resetAgentRegistry } from '../../agents/base/AgentRegistry.js';
-import { isTokfAvailable } from '../../utils/tokf.js';
+import { isTokfAvailable, wrapWithTokf } from '../../utils/tokf.js';
 
 const DEFAULT_MAX_TRIES = 5;
 const MAX_DEVOPS_CONTEXT_CHARS = 3000;
 const MAX_IMPLEMENTER_CONTEXT_CHARS = 12000;
+const INSTALL_TIMEOUT_MS = 120_000;
+
+type RepairPhase = 'build' | 'test';
+
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
 
 interface RepairOptions {
   tries?: string;
@@ -35,13 +45,22 @@ interface RepairStepResult {
 }
 
 interface RepairIterationResult {
+  phase: RepairPhase;
   try: number;
   devops: RepairStepResult;
   implementer?: RepairStepResult;
 }
 
+interface PhaseLoopResult {
+  succeeded: boolean;
+  iterations: RepairIterationResult[];
+  triesUsed: number;
+}
+
 interface RepairPayload {
   success: boolean;
+  buildPassed: boolean;
+  testsPassed: boolean;
   maxTries: number;
   attempts: number;
   projectProfile: ProjectProfile;
@@ -101,6 +120,7 @@ function formatProfileSummary(profile: ProjectProfile): string {
   const lines = [
     `  Build: ${profile.buildCommand}`,
     `  Test: ${profile.testCommand}`,
+    `  Install: ${profile.installCommand}`,
     `  Languages: ${profile.languages.join(', ') || 'unknown'}`,
   ];
   if (profile.packageManager) lines.push(`  Package manager: ${profile.packageManager}`);
@@ -115,6 +135,7 @@ function formatProfileContext(profile: ProjectProfile): string {
   return [
     `Build command: ${profile.buildCommand}`,
     `Test command: ${profile.testCommand}`,
+    `Install command: ${profile.installCommand}`,
     `Languages: ${profile.languages.join(', ')}`,
     profile.packageManager ? `Package manager: ${profile.packageManager}` : null,
     profile.bundler ? `Bundler: ${profile.bundler}` : null,
@@ -126,15 +147,20 @@ function formatProfileContext(profile: ProjectProfile): string {
     .join('\n');
 }
 
+function phaseCommand(profile: ProjectProfile, phase: RepairPhase): string {
+  return phase === 'build' ? profile.buildCommand : profile.testCommand;
+}
+
 function buildDevOpsContext(
   attempt: number,
   maxTries: number,
   latestImplementerOutput: string,
-  profile: ProjectProfile
+  profile: ProjectProfile,
+  phase: RepairPhase
 ): string {
   let context = [
     `Repair loop ${attempt} of ${maxTries}.`,
-    `Run the build command and report any blocking errors.`,
+    `Run the ${phase} command and report any blocking errors.`,
     '',
     'Project profile:',
     formatProfileContext(profile),
@@ -152,11 +178,12 @@ function buildImplementerContext(
   attempt: number,
   maxTries: number,
   profile: ProjectProfile,
-  devopsOutput: string
+  devopsOutput: string,
+  phase: RepairPhase
 ): string {
   return [
-    `DevOps build failed during repair loop ${attempt} of ${maxTries}.`,
-    'Use the error details below to fix the project so the next build can pass.',
+    `DevOps ${phase} failed during repair loop ${attempt} of ${maxTries}.`,
+    `Use the error details below to fix the project so the next ${phase} can pass.`,
     '',
     'Project profile:',
     formatProfileContext(profile),
@@ -167,13 +194,16 @@ function buildImplementerContext(
 }
 
 function buildRepairPayload(
-  repairSucceeded: boolean,
+  buildPassed: boolean,
+  testsPassed: boolean,
   maxTries: number,
   profile: ProjectProfile,
   iterations: RepairIterationResult[]
 ): RepairPayload {
   return {
-    success: repairSucceeded,
+    success: buildPassed && testsPassed,
+    buildPassed,
+    testsPassed,
     maxTries,
     attempts: iterations.length,
     projectProfile: profile,
@@ -193,6 +223,66 @@ function formatHandoffSummary(devopsResponse: AgentResponse, attempt: number): s
     `  Errors found: ${errorCount}`,
     `  Output: ${truncateForLog(devopsResponse.output)}`,
   ].join('\n');
+}
+
+// --- Direct command execution (no LLM) ---
+
+function runCommand(command: string, cwd: string): Promise<CommandResult> {
+  const finalCommand = isTokfAvailable() ? wrapWithTokf(command) : command;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('sh', ['-c', finalCommand], {
+      cwd,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+    child.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`Command timed out after ${INSTALL_TIMEOUT_MS}ms: ${command}`));
+    }, INSTALL_TIMEOUT_MS);
+
+    child.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      resolve({ stdout, stderr, exitCode: code ?? 1 });
+    });
+  });
+}
+
+async function runInstallPhase(
+  profile: ProjectProfile,
+  cwd: string,
+  isJson: boolean
+): Promise<void> {
+  if (!isJson) {
+    logger.agent('install', `Running: ${profile.installCommand}`);
+  }
+
+  const result = await runCommand(profile.installCommand, cwd);
+
+  if (!isJson) {
+    const status = result.exitCode === 0 ? 'succeeded' : 'failed';
+    logger.agent('install', `Install ${status} (exit ${result.exitCode})`);
+  }
+
+  if (result.exitCode !== 0) {
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
+    throw new Error(`Install failed (exit ${result.exitCode}):\n${truncateForLog(output, 2000)}`);
+  }
 }
 
 // --- Side-effect functions (logging, I/O) ---
@@ -218,7 +308,7 @@ function logProjectProfile(profile: ProjectProfile, isJson: boolean): void {
   logger.blank();
 }
 
-function logBuildCommand(devopsResponse: AgentResponse, isJson: boolean): void {
+function logPhaseCommand(devopsResponse: AgentResponse, phase: RepairPhase, isJson: boolean): void {
   if (isJson) return;
 
   const buildResult = devopsResponse.metadata.buildResult as BuildResult | undefined;
@@ -228,10 +318,9 @@ function logBuildCommand(devopsResponse: AgentResponse, isJson: boolean): void {
   const status = buildResult?.success ? 'passed' : 'failed';
 
   logger.agent('devops', JSON.stringify(buildResult));
-
   logger.agent(
     'devops',
-    `Build command: ${command} (exit ${exitCode}, ${errorCount} errors, ${status})`
+    `${phase} command: ${command} (exit ${exitCode}, ${errorCount} errors, ${status})`
   );
 }
 
@@ -252,8 +341,11 @@ function reportRepairResults(payload: RepairPayload, options: RepairOptions): vo
 
   logger.blank();
   logger.info(`Repair attempts: ${payload.attempts}/${payload.maxTries}`);
+
   if (payload.success) {
-    logger.success('Repair completed: build is passing');
+    logger.success('Repair completed: build and tests passing');
+  } else if (payload.buildPassed) {
+    logger.error('Repair incomplete: build passing but tests still failing');
   } else {
     logger.error('Repair incomplete: build still failing');
   }
@@ -261,24 +353,26 @@ function reportRepairResults(payload: RepairPayload, options: RepairOptions): vo
 
 // --- Async task functions ---
 
-async function runDevOpsBuildCheck(
+async function runDevOpsPhaseCheck(
   devops: ReturnType<typeof createDevOps>,
   taskContext: TaskContext,
   attempt: number,
   maxTries: number,
   latestImplementerOutput: string,
-  profile: ProjectProfile
+  profile: ProjectProfile,
+  phase: RepairPhase
 ): Promise<AgentResponse> {
+  const command = phaseCommand(profile, phase);
   const devopsTask = createTask({
-    goal: `Run the build command: ${profile.buildCommand}`,
-    description: `Execute "${profile.buildCommand}" and report any errors that block success.`,
-    metadata: { buildCommand: profile.buildCommand },
+    goal: `Run the ${phase} command: ${command}`,
+    description: `Execute "${command}" and report any errors that block success.`,
+    metadata: { phaseCommand: command },
     handoff: {
-      context: buildDevOpsContext(attempt, maxTries, latestImplementerOutput, profile),
+      context: buildDevOpsContext(attempt, maxTries, latestImplementerOutput, profile, phase),
       constraints: [
-        `Execute this exact command using run_command: ${profile.buildCommand}`,
+        `Execute this exact command using run_command: ${command}`,
         'Report exact error messages, file locations, and line numbers.',
-        'If build fails, provide actionable errors for Implementer to fix.',
+        `If ${phase} fails, provide actionable errors for Implementer to fix.`,
       ],
     },
   });
@@ -292,16 +386,17 @@ async function runImplementerFix(
   attempt: number,
   maxTries: number,
   profile: ProjectProfile,
-  devopsResponse: AgentResponse
+  devopsResponse: AgentResponse,
+  phase: RepairPhase
 ): Promise<AgentResponse> {
   const implementerTask = createTask({
-    goal: 'Fix the project based on DevOps build errors.',
-    description: 'Apply minimal code changes to resolve current build failures.',
+    goal: `Fix the project based on DevOps ${phase} errors.`,
+    description: `Apply minimal code changes to resolve current ${phase} failures.`,
     handoff: {
-      context: buildImplementerContext(attempt, maxTries, profile, devopsResponse.output),
+      context: buildImplementerContext(attempt, maxTries, profile, devopsResponse.output, phase),
       constraints: [
-        'Make targeted fixes for reported build errors.',
-        'Avoid unrelated refactors unless required for build stability.',
+        `Make targeted fixes for reported ${phase} errors.`,
+        `Avoid unrelated refactors unless required for ${phase} stability.`,
       ],
       artifacts: devopsResponse.artifacts.map((artifact) => formatArtifact(artifact)),
     },
@@ -344,56 +439,59 @@ function createRepairSession(config: ReturnType<typeof Config.get>): RepairSessi
 
 // --- Main repair loop ---
 
-async function executeRepairLoop(
+async function executePhaseLoop(
   agents: RepairAgents,
-  maxTries: number,
+  triesRemaining: number,
   profile: ProjectProfile,
-  options: RepairOptions
-): Promise<{ repairSucceeded: boolean; iterations: RepairIterationResult[] }> {
+  options: RepairOptions,
+  phase: RepairPhase
+): Promise<PhaseLoopResult> {
   const iterations: RepairIterationResult[] = [];
   let latestImplementerOutput = '';
-  let repairSucceeded = false;
+  let succeeded = false;
 
-  for (let attempt = 1; attempt <= maxTries; attempt++) {
+  for (let attempt = 1; attempt <= triesRemaining; attempt++) {
     if (!options.json) {
-      logger.agent('devops', `Loop ${attempt}/${maxTries}: running build diagnostics`);
+      logger.agent('devops', `${phase} loop ${attempt}/${triesRemaining}: running diagnostics`);
     }
 
-    const devopsResponse = await runDevOpsBuildCheck(
+    const devopsResponse = await runDevOpsPhaseCheck(
       agents.devops,
       agents.taskContext,
       attempt,
-      maxTries,
+      triesRemaining,
       latestImplementerOutput,
-      profile
+      profile,
+      phase
     );
 
-    logBuildCommand(devopsResponse, !!options.json);
+    logPhaseCommand(devopsResponse, phase, !!options.json);
 
     const iteration: RepairIterationResult = {
+      phase,
       try: attempt,
       devops: createStepResult(devopsResponse),
     };
 
     if (options.verbose && !options.json) {
-      logger.debug(`DevOps output (loop ${attempt}): ${truncateForLog(devopsResponse.output)}`);
+      logger.debug(`DevOps output (${phase} ${attempt}): ${truncateForLog(devopsResponse.output)}`);
     }
 
     if (devopsResponse.success) {
-      repairSucceeded = true;
+      succeeded = true;
       iterations.push(iteration);
-      if (!options.json) logger.success(`Build succeeded on loop ${attempt}`);
+      if (!options.json) logger.success(`${phase} succeeded on loop ${attempt}`);
       break;
     }
 
-    if (attempt === maxTries) {
+    if (attempt === triesRemaining) {
       iterations.push(iteration);
-      if (!options.json) logger.error(`Build is still failing after ${maxTries} loop(s)`);
+      if (!options.json) logger.error(`${phase} still failing after ${triesRemaining} loop(s)`);
       break;
     }
 
     if (!options.json) {
-      logger.handoff('devops', 'implementer', 'Build failed - apply targeted fixes');
+      logger.handoff('devops', 'implementer', `${phase} failed - apply targeted fixes`);
     }
 
     logDevOpsHandoff(devopsResponse, attempt, options);
@@ -402,9 +500,10 @@ async function executeRepairLoop(
       agents.implementer,
       agents.taskContext,
       attempt,
-      maxTries,
+      triesRemaining,
       profile,
-      devopsResponse
+      devopsResponse,
+      phase
     );
 
     latestImplementerOutput = implementerResponse.output;
@@ -413,18 +512,18 @@ async function executeRepairLoop(
 
     if (options.verbose && !options.json) {
       logger.debug(
-        `Implementer output (loop ${attempt}): ${truncateForLog(implementerResponse.output)}`
+        `Implementer output (${phase} ${attempt}): ${truncateForLog(implementerResponse.output)}`
       );
     }
   }
 
-  return { repairSucceeded, iterations };
+  return { succeeded, iterations, triesUsed: iterations.length };
 }
 
 // --- Command definition ---
 
 export const repairCommand = new Command('repair')
-  .description('Run a DevOps/Implementer repair loop to fix build errors in the current project')
+  .description('Run install, build, and test phases with DevOps/Implementer repair loops')
   .option('-t, --tries <count>', `Maximum repair loops to run (default: ${DEFAULT_MAX_TRIES})`)
   .option('-v, --verbose', 'Enable verbose output')
   .option('-j, --json', 'Output results as JSON')
@@ -441,29 +540,64 @@ export const repairCommand = new Command('repair')
       initializeMemory(config.memory);
       const session = createRepairSession(config);
 
-      if (!options.json) {
-        logger.agent('profiler', 'Analyzing project to identify build configuration...');
-      }
+      const cachedProfile = config.project;
+      let profile: ProjectProfile;
 
-      const profile = await profileProject(
-        session.llmProvider,
-        session.fileContext,
-        !!options.json
-      );
+      if (cachedProfile) {
+        profile = cachedProfile;
+        if (!options.json) {
+          logger.info('Using cached project profile from maestro.config.json');
+        }
+      } else {
+        if (!options.json) {
+          logger.agent('profiler', 'Analyzing project to identify build configuration...');
+        }
+        profile = await profileProject(session.llmProvider, session.fileContext, !!options.json);
+      }
 
       logProjectProfile(profile, !!options.json);
 
-      const { repairSucceeded, iterations } = await executeRepairLoop(
+      // Phase 1: Install dependencies (direct execution, abort on failure)
+      const cwd = session.agents.taskContext.projectContext.workingDirectory;
+      await runInstallPhase(profile, cwd, !!options.json);
+
+      // Phase 2: Build loop
+      let triesRemaining = maxTries;
+      const buildResult = await executePhaseLoop(
         session.agents,
-        maxTries,
+        triesRemaining,
         profile,
-        options
+        options,
+        'build'
+      );
+      triesRemaining -= buildResult.triesUsed;
+
+      if (!buildResult.succeeded) {
+        const payload = buildRepairPayload(false, false, maxTries, profile, buildResult.iterations);
+        reportRepairResults(payload, options);
+        process.exit(1);
+      }
+
+      // Phase 3: Test loop (uses remaining budget)
+      const testResult = await executePhaseLoop(
+        session.agents,
+        Math.max(triesRemaining, 1),
+        profile,
+        options,
+        'test'
       );
 
-      const payload = buildRepairPayload(repairSucceeded, maxTries, profile, iterations);
+      const allIterations = [...buildResult.iterations, ...testResult.iterations];
+      const payload = buildRepairPayload(
+        true,
+        testResult.succeeded,
+        maxTries,
+        profile,
+        allIterations
+      );
       reportRepairResults(payload, options);
 
-      if (!repairSucceeded) process.exit(1);
+      if (!testResult.succeeded) process.exit(1);
     } catch (error) {
       if (!options.json) {
         logger.error(formatError(error));

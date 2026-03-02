@@ -9,12 +9,14 @@ import { profileProject, type ProjectProfile } from '../../context/profileProjec
 interface AnalyseOptions {
   verbose?: boolean;
   json?: boolean;
+  dryRun?: boolean;
 }
 
 function formatProfileSummary(profile: ProjectProfile): string {
   const lines = [
     `  Build command: ${profile.buildCommand}`,
     `  Test command: ${profile.testCommand}`,
+    `  Install command: ${profile.installCommand}`,
     `  Languages: ${profile.languages.join(', ') || 'unknown'}`,
   ];
   if (profile.packageManager) lines.push(`  Package manager: ${profile.packageManager}`);
@@ -27,9 +29,10 @@ function formatProfileSummary(profile: ProjectProfile): string {
 
 export const analyseCommand = new Command('analyse')
   .alias('analyze')
-  .description('Analyse the current project and return a structured project profile')
+  .description('Analyse the current project and save the profile to maestro.config.json')
   .option('-v, --verbose', 'Enable verbose output (show files being read)')
   .option('-j, --json', 'Output raw JSON')
+  .option('--dry-run', 'Show the profile without saving to maestro.config.json')
   .action(async (options: AnalyseOptions) => {
     try {
       await Config.load();
@@ -46,6 +49,15 @@ export const analyseCommand = new Command('analyse')
       }
 
       const profile = await profileProject(llmProvider, fileContext, !!options.json);
+
+      if (!options.dryRun) {
+        const savedPath = config.saveProjectProfile(profile);
+        if (!options.json) {
+          logger.success(`Project profile saved to ${savedPath}`);
+        }
+      } else if (!options.json) {
+        logger.info('Dry run — profile not saved to config');
+      }
 
       if (options.json) {
         console.log(JSON.stringify(profile, null, 2));
