@@ -209,7 +209,9 @@ export class ExecutionLoop extends EventEmitter<ExecutionLoopEvents> {
     for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
       try {
         // Route to best agent
-        const decision = await this.router.route(currentTask, this.buildContext(currentTask));
+        const decision = currentTask.assignedTo
+          ? await this.router.routeWithPreference(currentTask, this.buildContext(currentTask), currentTask.assignedTo)
+          : await this.router.route(currentTask, this.buildContext(currentTask));
         this.emit('taskRouted', currentTask, decision);
 
         currentTask = {

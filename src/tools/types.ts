@@ -142,16 +142,4 @@ export const COMMAND_TOOLS: ToolDefinition[] = [
       required: ['command'],
     },
   },
-  {
-    name: 'detect_project_type',
-    description:
-      'Analyze the project to detect its type, build system, and available commands. Returns information about package.json, Cargo.toml, go.mod, Makefile, etc.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        // No additional properties needed - analyzes current project
-      },
-      required: [],
-    },
-  },
 ];

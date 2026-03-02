@@ -69,4 +69,7 @@ Please provide a comprehensive design including:
 6. **Risks & Mitigations**: Potential issues and how to address them
 
 Be specific and actionable. The Implementer agent will use this design to write code.
+
+When your design is complete, end your response with exactly:
+Handoff to implementer
 `;

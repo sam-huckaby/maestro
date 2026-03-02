@@ -29,7 +29,9 @@ export class Architect extends Agent {
 
     const response = await super.execute(task, context);
 
-    this.logDesignSummary(response, task);
+    if (response.nextAction?.type === 'handoff' || response.nextAction?.type === 'complete') {
+      this.logDesignSummary(response, task);
+    }
 
     return response;
   }

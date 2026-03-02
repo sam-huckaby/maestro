@@ -5,13 +5,16 @@ import { shipCommand } from './commands/ship.js';
 import { statusCommand } from './commands/status.js';
 import { agentsCommand } from './commands/agents.js';
 import { memoryCommand } from './commands/memory.js';
+import { analyseCommand } from './commands/analyse.js';
 
 export function createCli(): Command {
   const program = new Command();
 
   program
     .name('maestro')
-    .description('Multi-Agent Orchestration CLI - Coordinate AI agents using confidence-based routing')
+    .description(
+      'Multi-Agent Orchestration CLI - Coordinate AI agents using confidence-based routing'
+    )
     .version('1.0.0');
 
   program.addCommand(initCommand);
@@ -20,6 +23,7 @@ export function createCli(): Command {
   program.addCommand(statusCommand);
   program.addCommand(agentsCommand);
   program.addCommand(memoryCommand);
+  program.addCommand(analyseCommand);
 
   return program;
 }

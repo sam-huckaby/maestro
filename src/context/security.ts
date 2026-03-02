@@ -165,6 +165,9 @@ export function getProtectedWritePatterns(): string[] {
 
 // Allowed command prefixes for build/test operations
 const ALLOWED_COMMAND_PREFIXES = [
+  // Output compression (tokf wraps build/test commands)
+  'tokf ',
+  'tokf run ',
   // Node.js package managers
   'npm ',
   'npm run ',
@@ -263,20 +266,20 @@ export function isAllowedCommand(command: string): { allowed: boolean; reason?: 
     if (trimmedCommand.includes(pattern)) {
       return {
         allowed: false,
-        reason: `Command contains blocked pattern: "${pattern}"`
+        reason: `Command contains blocked pattern: "${pattern}"`,
       };
     }
   }
 
   // Check if command starts with an allowed prefix
-  const isAllowed = ALLOWED_COMMAND_PREFIXES.some(prefix =>
-    trimmedCommand.startsWith(prefix) || trimmedCommand === prefix.trim()
+  const isAllowed = ALLOWED_COMMAND_PREFIXES.some(
+    (prefix) => trimmedCommand.startsWith(prefix) || trimmedCommand === prefix.trim()
   );
 
   if (!isAllowed) {
     return {
       allowed: false,
-      reason: `Command must start with an allowed prefix (npm, yarn, cargo, go, make, etc.)`
+      reason: `Command must start with an allowed prefix (npm, yarn, cargo, go, make, etc.)`,
     };
   }
 

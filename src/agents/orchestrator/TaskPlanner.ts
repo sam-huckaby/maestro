@@ -80,7 +80,31 @@ export class TaskPlanner {
 
     const textContent = extractTextContent(response.content);
     const parsed = this.parsePlanResponse(textContent, goal);
-    return this.buildDecomposition(goal, parsed);
+    const decomposition = this.buildDecomposition(goal, parsed);
+
+    this.logPlan(decomposition);
+
+    return decomposition;
+  }
+
+  private logPlan(decomposition: TaskDecomposition): void {
+    logger.divider();
+    logger.agent('planner', `Created ${decomposition.tasks.length} tasks for: ${decomposition.originalGoal}`);
+
+    for (let i = 0; i < decomposition.tasks.length; i++) {
+      const task = decomposition.tasks[i]!;
+      const taskType = (task.metadata.taskType as string) || 'general';
+      const deps = task.dependencies.length > 0
+        ? ` (depends on: ${task.dependencies.map(depId => {
+            const depIndex = decomposition.tasks.findIndex(t => t.id === depId);
+            return depIndex >= 0 ? `#${depIndex + 1}` : depId;
+          }).join(', ')})`
+        : '';
+
+      logger.info(`  ${i + 1}. [${taskType}] ${task.goal}${deps}`);
+    }
+
+    logger.divider();
   }
 
   private buildPlanningPrompt(goal: string, context: ProjectContext): string {
