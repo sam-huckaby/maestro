@@ -23,7 +23,7 @@ const MAX_DEVOPS_CONTEXT_CHARS = 3000;
 const MAX_IMPLEMENTER_CONTEXT_CHARS = 12000;
 const INSTALL_TIMEOUT_MS = 120_000;
 
-type RepairPhase = 'build' | 'test';
+type RepairPhase = 'install' | 'build' | 'test';
 
 interface CommandResult {
   stdout: string;
@@ -35,6 +35,7 @@ interface RepairOptions {
   tries?: string;
   verbose?: boolean;
   json?: boolean;
+  fixInstall?: boolean;
 }
 
 interface RepairStepResult {
@@ -59,6 +60,7 @@ interface PhaseLoopResult {
 
 interface RepairPayload {
   success: boolean;
+  installPassed: boolean;
   buildPassed: boolean;
   testsPassed: boolean;
   maxTries: number;
@@ -148,6 +150,7 @@ function formatProfileContext(profile: ProjectProfile): string {
 }
 
 function phaseCommand(profile: ProjectProfile, phase: RepairPhase): string {
+  if (phase === 'install') return profile.installCommand;
   return phase === 'build' ? profile.buildCommand : profile.testCommand;
 }
 
@@ -194,6 +197,7 @@ function buildImplementerContext(
 }
 
 function buildRepairPayload(
+  installPassed: boolean,
   buildPassed: boolean,
   testsPassed: boolean,
   maxTries: number,
@@ -201,7 +205,8 @@ function buildRepairPayload(
   iterations: RepairIterationResult[]
 ): RepairPayload {
   return {
-    success: buildPassed && testsPassed,
+    success: installPassed && buildPassed && testsPassed,
+    installPassed,
     buildPassed,
     testsPassed,
     maxTries,
@@ -267,7 +272,7 @@ async function runInstallPhase(
   profile: ProjectProfile,
   cwd: string,
   isJson: boolean
-): Promise<void> {
+): Promise<boolean> {
   if (!isJson) {
     logger.agent('install', `Running: ${profile.installCommand}`);
   }
@@ -279,10 +284,7 @@ async function runInstallPhase(
     logger.agent('install', `Install ${status} (exit ${result.exitCode})`);
   }
 
-  if (result.exitCode !== 0) {
-    const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
-    throw new Error(`Install failed (exit ${result.exitCode}):\n${truncateForLog(output, 2000)}`);
-  }
+  return result.exitCode === 0;
 }
 
 // --- Side-effect functions (logging, I/O) ---
@@ -343,11 +345,13 @@ function reportRepairResults(payload: RepairPayload, options: RepairOptions): vo
   logger.info(`Repair attempts: ${payload.attempts}/${payload.maxTries}`);
 
   if (payload.success) {
-    logger.success('Repair completed: build and tests passing');
-  } else if (payload.buildPassed) {
-    logger.error('Repair incomplete: build passing but tests still failing');
-  } else {
+    logger.success('Repair completed: install, build, and tests passing');
+  } else if (!payload.installPassed) {
+    logger.error('Repair incomplete: install still failing');
+  } else if (!payload.buildPassed) {
     logger.error('Repair incomplete: build still failing');
+  } else {
+    logger.error('Repair incomplete: build passing but tests still failing');
   }
 }
 
@@ -527,6 +531,7 @@ export const repairCommand = new Command('repair')
   .option('-t, --tries <count>', `Maximum repair loops to run (default: ${DEFAULT_MAX_TRIES})`)
   .option('-v, --verbose', 'Enable verbose output')
   .option('-j, --json', 'Output results as JSON')
+  .option('--fix-install', 'Attempt to fix install failures using the repair loop')
   .action(async (options: RepairOptions) => {
     try {
       await Config.load();
@@ -557,12 +562,41 @@ export const repairCommand = new Command('repair')
 
       logProjectProfile(profile, !!options.json);
 
-      // Phase 1: Install dependencies (direct execution, abort on failure)
+      // Phase 1: Install dependencies
       const cwd = session.agents.taskContext.projectContext.workingDirectory;
-      await runInstallPhase(profile, cwd, !!options.json);
+      let triesRemaining = maxTries;
+      let installIterations: RepairIterationResult[] = [];
+
+      const installOk = await runInstallPhase(profile, cwd, !!options.json);
+
+      if (!installOk && options.fixInstall) {
+        const installResult = await executePhaseLoop(
+          session.agents,
+          triesRemaining,
+          profile,
+          options,
+          'install'
+        );
+        triesRemaining -= installResult.triesUsed;
+        installIterations = installResult.iterations;
+
+        if (!installResult.succeeded) {
+          const payload = buildRepairPayload(
+            false,
+            false,
+            false,
+            maxTries,
+            profile,
+            installIterations
+          );
+          reportRepairResults(payload, options);
+          process.exit(1);
+        }
+      } else if (!installOk) {
+        throw new Error('Install failed. Use --fix-install to attempt automated repair.');
+      }
 
       // Phase 2: Build loop
-      let triesRemaining = maxTries;
       const buildResult = await executePhaseLoop(
         session.agents,
         triesRemaining,
@@ -573,7 +607,8 @@ export const repairCommand = new Command('repair')
       triesRemaining -= buildResult.triesUsed;
 
       if (!buildResult.succeeded) {
-        const payload = buildRepairPayload(false, false, maxTries, profile, buildResult.iterations);
+        const allIterations = [...installIterations, ...buildResult.iterations];
+        const payload = buildRepairPayload(true, false, false, maxTries, profile, allIterations);
         reportRepairResults(payload, options);
         process.exit(1);
       }
@@ -587,8 +622,13 @@ export const repairCommand = new Command('repair')
         'test'
       );
 
-      const allIterations = [...buildResult.iterations, ...testResult.iterations];
+      const allIterations = [
+        ...installIterations,
+        ...buildResult.iterations,
+        ...testResult.iterations,
+      ];
       const payload = buildRepairPayload(
+        true,
         true,
         testResult.succeeded,
         maxTries,
